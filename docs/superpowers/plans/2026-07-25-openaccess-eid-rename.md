@@ -20,6 +20,7 @@
 - **Do not touch** `SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider`. The `RequireCardBoundCredentials` and `RequireRevocationCheck` policies live under Microsoft's key, not the project's, and are unaffected by this rename.
 - **Build with `.\build.ps1 Debug x64`.** Never invoke msbuild on a single `.vcxproj` — the inter-project lib path only resolves through the solution build, and `build.ps1` also performs minidriver and icon staging.
 - **Base branch:** cut a branch `rename/openaccess-eid` from `main` at or after the v1.2.00 prerelease tag. The rename ships as **v2.0.00** because it is a breaking change for anyone who scripted against the old paths, registry keys or Group Policy namespace.
+- **Keep the original author's attribution and the LGPL-2.1 license (issue #63).** Every `Copyright (C) 2009 Vincent Le Toux` and `Copyright (C) 2009-2011 My Smart Logon` line, the README "Credits and license" section and fork notice, and the non-affiliation statement in `Installer/license.txt` must survive the rename unchanged apart from the product name. Never reintroduce `www.mysmartlogon.com` as a `CompanyName`. Any new source file gets the LGPL-2.1 header, not GPL. Add both checks to the Task 1 guard rails.
 - **Every task ends with a commit.** Do not batch commits across tasks.
 
 ### Canonical mapping table

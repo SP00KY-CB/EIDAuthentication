@@ -8,9 +8,11 @@
 [![Aikido Security](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FDangerDawgAU%2FEIDAuthentication%2Fbadges%2Faikido-security.json)](https://app.aikido.dev/repositories/2594845)
 [![Aikido Code Quality](https://img.shields.io/badge/Aikido-code%20quality-1f6feb)](https://app.aikido.dev/repositories/2594845)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/DangerDawgAU/EIDAuthentication/badge)](https://scorecard.dev/viewer/?uri=github.com/DangerDawgAU/EIDAuthentication)
-[![License: GPL-3.0](https://img.shields.io/github/license/DangerDawgAU/EIDAuthentication)](LICENSE)
+[![License: LGPL-2.1](https://img.shields.io/github/license/DangerDawgAU/EIDAuthentication)](LICENSE)
 
 **Certificate-based smart card logon for local Windows accounts, built for environments where Active Directory cannot be used.**
+
+> This project is a fork of **EIDAuthenticate Community Edition**, originally written by **Vincent Le Toux** ([My Smart Logon](https://www.mysmartlogon.com)). It is maintained independently and is not affiliated with or endorsed by My Smart Logon. For the commercially supported product, see My Smart Logon's EIDAuthenticate. See [Credits and license](#credits-and-license).
 
 Supports any smart card with a Windows minidriver. The installer bundles minidrivers for Aventra MyEID, YubiKey, and Idemia IDOne PIV cards; the OpenSC minidriver extends coverage to many additional cards.
 
@@ -488,6 +490,10 @@ Protection.
 
 ---
 
-## License
+## Credits and license
 
-GNU General Public License v3.0 - See [LICENSE](LICENSE)
+EID Authentication is derived from **EIDAuthenticate Community Edition** by **Vincent Le Toux**, Copyright (C) 2009 Vincent Le Toux / Copyright (C) 2009-2011 My Smart Logon, originally published at <https://sourceforge.net/projects/eidauthenticate/>. The authentication package, credential provider, card library and configuration wizard in this repository are built on his original work, and his copyright notices are retained in the source files derived from it. Later modifications are copyright their respective contributors (see the git history).
+
+This fork is maintained independently. It is not affiliated with, reviewed by or endorsed by Vincent Le Toux or My Smart Logon,. Problems with this fork should be reported here, not to the original author.
+
+Licensed under the GNU Lesser General Public License version 2.1, the same license as the original work. See [LICENSE](LICENSE).
