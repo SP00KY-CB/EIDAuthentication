@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2026 Contributors
 
     This library is free software; you can redistribute it and/or

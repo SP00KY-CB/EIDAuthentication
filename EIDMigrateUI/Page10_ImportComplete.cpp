@@ -84,12 +84,12 @@ INT_PTR CALLBACK WndProc_10_ImportComplete(HWND hwndDlg, UINT uMsg, WPARAM wPara
             // EIDLogManager has been retired in favour of Group Policy management; open the CSV
             // audit-log folder directly instead of launching the (removed) manager application.
             HINSTANCE hResult = ShellExecuteW(hwndDlg, L"open",
-                L"C:\\ProgramData\\EIDAuthentication\\logs",
+                L"C:\\ProgramData\\OpenAccessEID\\logs",
                 nullptr, nullptr, SW_SHOWNORMAL);
             if ((INT_PTR)hResult <= 32) {
                 MessageBoxW(hwndDlg,
                     L"Unable to open the log folder. The CSV audit logs are located at "
-                    L"C:\\ProgramData\\EIDAuthentication\\logs.",
+                    L"C:\\ProgramData\\OpenAccessEID\\logs.",
                     L"View Log", MB_ICONWARNING);
             }
             return TRUE;

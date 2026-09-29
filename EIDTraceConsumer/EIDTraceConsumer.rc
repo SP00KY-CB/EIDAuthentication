@@ -39,13 +39,13 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "EID Authentication contributors"
+            VALUE "CompanyName", "OpenAccess EID contributors"
             VALUE "FileDescription", "EID Trace Consumer Service"
             VALUE "FileVersion", "1.0.0.0"
             VALUE "InternalName", "EIDTraceConsumer"
             VALUE "LegalCopyright", "Copyright (C) 2009 Vincent Le Toux, (C) 2026 Contributors. LGPL-2.1"
             VALUE "OriginalFilename", "EIDTraceConsumer.exe"
-            VALUE "ProductName", "EIDAuthentication"
+            VALUE "ProductName", "OpenAccess EID"
             VALUE "ProductVersion", "1.0.0.0"
         END
     END

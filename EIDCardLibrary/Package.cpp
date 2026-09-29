@@ -1,5 +1,5 @@
 ﻿/*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -654,7 +654,7 @@ NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAu
 // Diagnostic dump of an attacker-supplied logon buffer.
 //
 // This runs UNCONDITIONALLY on every logon attempt (see the call in
-// EIDAuthenticationPackage.cpp), before the callers' own field validation, so
+// OpenAccessEIDPackage.cpp), before the callers' own field validation, so
 // it must be total: every length is clamped to the local buffer and every
 // CspData read goes through EIDCspInfoStringAt. Two concrete defects lived
 // here - `Buffer[Length/2] = 0` wrote up to index 32767 into a 1000-WCHAR

@@ -1,5 +1,5 @@
 /*
-    EID Authentication - fuzz target: interactive-logon submit buffer
+    OpenAccess EID - fuzz target: interactive-logon submit buffer
     Copyright (C) 2026 Contributors
 
     This library is free software; you can redistribute it and/or

@@ -44,13 +44,13 @@ BEGIN
     BEGIN
         BLOCK "000004b0"
         BEGIN
-            VALUE "CompanyName", "EID Authentication contributors"
+            VALUE "CompanyName", "OpenAccess EID contributors"
             VALUE "LegalCopyright", "Copyright (C) 2009 Vincent Le Toux, (C) 2026 Contributors. LGPL-2.1"
             VALUE "FileDescription", "Authentication Package"
             VALUE "FileVersion", EIDAuthenticateVersionText
-            VALUE "InternalName", "EIDAuthenticationPackage.dll"
-            VALUE "OriginalFilename", "EIDAuthenticationPackage.dll"
-            VALUE "ProductName", "EID Authentication"
+            VALUE "InternalName", "OpenAccessEIDPackage.dll"
+            VALUE "OriginalFilename", "OpenAccessEIDPackage.dll"
+            VALUE "ProductName", "OpenAccess EID"
             VALUE "ProductVersion", EIDAuthenticateVersionText
         END
     END

@@ -2,9 +2,9 @@
 <VisualStudioProject
 	ProjectType="Visual C++"
 	Version="9,00"
-	Name="EIDAuthenticationPackage"
+	Name="OpenAccessEIDPackage"
 	ProjectGUID="{4711AF6D-0E6C-4D71-9238-053FB0B287DA}"
-	RootNamespace="EIDAuthenticationPackage"
+	RootNamespace="OpenAccessEIDPackage"
 	Keyword="Win32Proj"
 	TargetFrameworkVersion="196613"
 	>
@@ -44,7 +44,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				Optimization="0"
-				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS"
+				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS"
 				BasicRuntimeChecks="3"
 				RuntimeLibrary="1"
 				WarningLevel="4"
@@ -63,7 +63,7 @@
 				Name="VCLinkerTool"
 				OutputFile="$(OutDir)\$(ProjectName).dll"
 				LinkIncremental="2"
-				ModuleDefinitionFile="EIDAuthenticationPackage.def"
+				ModuleDefinitionFile="OpenAccessEIDPackage.def"
 				DelayLoadDLLs=" beid35libCpp.dll"
 				GenerateDebugInformation="true"
 				SubSystem="2"
@@ -118,7 +118,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				Optimization="0"
-				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS"
+				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS"
 				BasicRuntimeChecks="3"
 				RuntimeLibrary="1"
 				WarningLevel="4"
@@ -137,7 +137,7 @@
 				Name="VCLinkerTool"
 				OutputFile="$(OutDir)\$(ProjectName).dll"
 				LinkIncremental="2"
-				ModuleDefinitionFile="EIDAuthenticationPackage.def"
+				ModuleDefinitionFile="OpenAccessEIDPackage.def"
 				DelayLoadDLLs=" beid35libCpp.dll"
 				GenerateDebugInformation="true"
 				SubSystem="2"
@@ -192,7 +192,7 @@
 				Name="VCCLCompilerTool"
 				Optimization="2"
 				EnableIntrinsicFunctions="true"
-				PreprocessorDefinitions="WIN32;NDEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS"
+				PreprocessorDefinitions="WIN32;NDEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS"
 				RuntimeLibrary="0"
 				EnableFunctionLevelLinking="true"
 				UsePrecompiledHeader="0"
@@ -213,7 +213,7 @@
 				AdditionalOptions="/LTCG"
 				OutputFile="$(OutDir)\$(ProjectName).dll"
 				LinkIncremental="1"
-				ModuleDefinitionFile="EIDAuthenticationPackage.def"
+				ModuleDefinitionFile="OpenAccessEIDPackage.def"
 				DelayLoadDLLs=" beid35libCpp.dll"
 				GenerateDebugInformation="true"
 				SubSystem="2"
@@ -271,7 +271,7 @@
 				Name="VCCLCompilerTool"
 				Optimization="2"
 				EnableIntrinsicFunctions="true"
-				PreprocessorDefinitions="WIN32;NDEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS"
+				PreprocessorDefinitions="WIN32;NDEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS"
 				RuntimeLibrary="0"
 				EnableFunctionLevelLinking="true"
 				UsePrecompiledHeader="0"
@@ -292,7 +292,7 @@
 				AdditionalOptions="/LTCG"
 				OutputFile="$(OutDir)\$(ProjectName).dll"
 				LinkIncremental="1"
-				ModuleDefinitionFile="EIDAuthenticationPackage.def"
+				ModuleDefinitionFile="OpenAccessEIDPackage.def"
 				DelayLoadDLLs=" beid35libCpp.dll"
 				GenerateDebugInformation="true"
 				SubSystem="2"
@@ -347,7 +347,7 @@
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/analyze"
 				Optimization="0"
-				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS"
+				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS"
 				BasicRuntimeChecks="3"
 				RuntimeLibrary="1"
 				WarningLevel="4"
@@ -366,7 +366,7 @@
 				Name="VCLinkerTool"
 				OutputFile="$(OutDir)\$(ProjectName).dll"
 				LinkIncremental="2"
-				ModuleDefinitionFile="EIDAuthenticationPackage.def"
+				ModuleDefinitionFile="OpenAccessEIDPackage.def"
 				DelayLoadDLLs=" beid35libCpp.dll"
 				GenerateDebugInformation="true"
 				SubSystem="2"
@@ -422,7 +422,7 @@
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/analyze"
 				Optimization="0"
-				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS"
+				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS"
 				BasicRuntimeChecks="3"
 				RuntimeLibrary="1"
 				WarningLevel="4"
@@ -441,7 +441,7 @@
 				Name="VCLinkerTool"
 				OutputFile="$(OutDir)\$(ProjectName).dll"
 				LinkIncremental="2"
-				ModuleDefinitionFile="EIDAuthenticationPackage.def"
+				ModuleDefinitionFile="OpenAccessEIDPackage.def"
 				DelayLoadDLLs=" beid35libCpp.dll"
 				GenerateDebugInformation="true"
 				SubSystem="2"
@@ -479,11 +479,11 @@
 			UniqueIdentifier="{4FC737F1-C7A5-4376-A066-2A32D752A2FF}"
 			>
 			<File
-				RelativePath=".\EIDAuthenticationPackage.cpp"
+				RelativePath=".\OpenAccessEIDPackage.cpp"
 				>
 			</File>
 			<File
-				RelativePath=".\EIDAuthenticationPackage.def"
+				RelativePath=".\OpenAccessEIDPackage.def"
 				>
 			</File>
 			<File

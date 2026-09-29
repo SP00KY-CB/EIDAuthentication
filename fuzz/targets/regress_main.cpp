@@ -1,5 +1,5 @@
 /*
-    EID Authentication - fuzz/regression harness
+    OpenAccess EID - fuzz/regression harness
     Copyright (C) 2026 Contributors
 
     This library is free software; you can redistribute it and/or
@@ -498,7 +498,7 @@ bool IsAcceptableLogPathRule(const std::wstring& wsPath)
 	if (wsPath.find(L"..") != std::wstring::npos || wsPath.find(L'/') != std::wstring::npos) return false;
 	if (wsPath.length() < 4 || wsPath[1] != L':' || wsPath[2] != L'\\') return false;
 	if (wsPath.find(L':', 2) != std::wstring::npos) return false;
-	const std::wstring wsRoot = L"C:\\ProgramData\\EIDAuthentication\\";
+	const std::wstring wsRoot = L"C:\\ProgramData\\OpenAccessEID\\";
 	if (wsPath.length() <= wsRoot.length() ||
 		_wcsnicmp(wsPath.c_str(), wsRoot.c_str(), wsRoot.length()) != 0) return false;
 	return true;
@@ -534,13 +534,13 @@ void TestConfigLoader()
 	const wchar_t* rgBad[] = {
 		L"",                                                  // empty
 		L"\\\\server\\share\\evil.csv",                       // UNC
-		L"\\\\?\\C:\\ProgramData\\EIDAuthentication\\x.csv",   // device namespace
-		L"C:\\ProgramData\\EIDAuthentication\\..\\..\\x.csv",  // traversal
-		L"C:/ProgramData/EIDAuthentication/x.csv",             // forward slashes
+		L"\\\\?\\C:\\ProgramData\\OpenAccessEID\\x.csv",   // device namespace
+		L"C:\\ProgramData\\OpenAccessEID\\..\\..\\x.csv",  // traversal
+		L"C:/ProgramData/OpenAccessEID/x.csv",             // forward slashes
 		L"C:\\Windows\\System32\\x.csv",                       // outside the product dir
-		L"C:\\ProgramData\\EIDAuthenticationEvil\\x.csv",      // prefix look-alike
+		L"C:\\ProgramData\\OpenAccessEIDEvil\\x.csv",      // prefix look-alike
 		L"x.csv",                                              // relative
-		L"C:\\ProgramData\\EIDAuthentication\\x.csv:ads",      // alternate data stream
+		L"C:\\ProgramData\\OpenAccessEID\\x.csv:ads",      // alternate data stream
 	};
 	bool fRejectsOk = true;
 	for (size_t i = 0; i < ARRAYSIZE(rgBad); i++)
@@ -555,7 +555,7 @@ void TestConfigLoader()
 
 	// And the legitimate one must still work, or logging silently stops.
 	CheckAccepted("config: default logPath still accepted",
-		IsAcceptableLogPathRule(L"C:\\ProgramData\\EIDAuthentication\\logs\\events.csv"));
+		IsAcceptableLogPathRule(L"C:\\ProgramData\\OpenAccessEID\\logs\\events.csv"));
 }
 
 } // namespace

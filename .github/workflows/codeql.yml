@@ -97,7 +97,7 @@ jobs:
 
     - name: Build solution
       if: matrix.build-mode == 'manual'
-      run: msbuild EIDCredentialProvider.sln /p:Configuration=Release /p:Platform=x64
+      run: msbuild OpenAccessEID.sln /p:Configuration=Release /p:Platform=x64
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4

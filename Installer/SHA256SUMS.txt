@@ -1,4 +1,4 @@
-# EID Authentication - SHA-256 manifest
+# OpenAccess EID - SHA-256 manifest
 # Generated: 2026-07-18T03:34:01Z  (UTC)
 # Configuration: Release   Platform: x64
 # Format: <sha256>  <relative-path>
@@ -7,9 +7,9 @@ e9789b800a1201bc7a7f8b72fb3c9c8b10caafd4541c013f1383f5ba2cf3a510  Installer\driv
 f17279c3aa07497874d7dc8e3a4f1f500aa20e9bd273a8dd34be7a37231356a9  Installer\drivers\WindowsUpdate_Minidriver.cab
 4c657c148c6da60127094f8a64345317906a49df25c3aad0898c0fefa6e07fb3  Installer\drivers\YubiKey-Minidriver-5.0.4.273-x64.msi
 d978c4a589266d0bda788e39d47912e11cd5dc7efcb712fa82b3885075d3bc36  Installer\EIDInstallx64.exe
-e616b49ec0a9f029e5cba794d65c201ca805025a2bfd2870d4f70c5c463d8c38  Installer\PolicyDefinitions\EIDAuthentication.admx
-1956d2286a9db51708a2e1fc586216240bff37ae6f2d5bf9263adf6aba3bb92b  Installer\PolicyDefinitions\en-US\EIDAuthentication.adml
-b51816e14a50fa64280bb43ab9a311269b4ff9658fdf2d6e326cf14c62c23d6c  x64\Release\EIDAuthenticationPackage.dll
+e616b49ec0a9f029e5cba794d65c201ca805025a2bfd2870d4f70c5c463d8c38  Installer\PolicyDefinitions\OpenAccessEID.admx
+1956d2286a9db51708a2e1fc586216240bff37ae6f2d5bf9263adf6aba3bb92b  Installer\PolicyDefinitions\en-US\OpenAccessEID.adml
+b51816e14a50fa64280bb43ab9a311269b4ff9658fdf2d6e326cf14c62c23d6c  x64\Release\OpenAccessEIDPackage.dll
 94313340aebdc271a6ae51737e031e5bdf81b403cf6cdefe04a536d431d170a9  x64\Release\EIDConfigurationWizard.exe
 3e0a7e2aa8a02124eaeef0d59f147dec7ccfa20de74c319efa8f2688cdea9e95  x64\Release\EIDConfigurationWizardElevated.exe
 c4163a1a6fb1be643356132e5661b56ca9e08a03edad8ef47c75bc620067bc6b  x64\Release\EIDCredentialProvider.dll

@@ -1,4 +1,4 @@
-EID Authentication
+OpenAccess EID
 Copyright (C) 2009-2011 My Smart Logon
 Copyright (C) 2009 Vincent Le Toux
 Copyright (C) 2026 Contributors

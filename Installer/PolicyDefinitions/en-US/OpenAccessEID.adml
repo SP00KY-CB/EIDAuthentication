@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <policyDefinitionResources revision="1.0" schemaVersion="1.0">
-  <displayName>EID Authentication</displayName>
-  <description>Group policy settings for EID Authentication smart card credential provider.</description>
+  <displayName>OpenAccess EID</displayName>
+  <description>Group policy settings for OpenAccess EID smart card credential provider.</description>
 
   <resources>
     <stringTable>
 
-      <string id="SUPPORTED_EIDAuth_1_0">EID Authentication 1.0 or later</string>
+      <string id="SUPPORTED_EIDAuth_1_0">OpenAccess EID 1.0 or later</string>
 
-      <string id="Cat_EIDAuthentication">EID Authentication</string>
+      <string id="Cat_OpenAccessEID">OpenAccess EID</string>
 
       <string id="EnforceCSPWhitelist">Enforce Cryptographic Service Provider (CSP) whitelist</string>
-      <string id="EnforceCSPWhitelist_Help">When enabled, the EID Authentication credential provider rejects smart-card certificates that are bound to a CSP / KSP provider not present in the built-in whitelist. This blocks attacker-controlled or untrusted cryptographic providers from being used for authentication, even if the certificate chain otherwise validates.
+      <string id="EnforceCSPWhitelist_Help">When enabled, the OpenAccess EID credential provider rejects smart-card certificates that are bound to a CSP / KSP provider not present in the built-in whitelist. This blocks attacker-controlled or untrusted cryptographic providers from being used for authentication, even if the certificate chain otherwise validates.
 
 When disabled or not configured, any provider returned by the minidriver is accepted (Windows default behaviour).
 
@@ -22,16 +22,16 @@ Recommended setting for high-assurance environments: Enabled.
 This policy is written to:
 HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider!EnforceCSPWhitelist (DWORD)
 
-Note: The standard Windows smart-card credential provider policies (AllowSignatureOnlyKeys, AllowCertificatesWithNoEKU, AllowTimeInvalidCertificates, AllowIntegratedUnblock, FilterDuplicateCertificates, ForceReadingAllCertificates, ReverseSubject, X509HintsNeeded, CertPropEnabledString, CertPropRootEnabledString, RootsCleanupOption, and IntegratedUnblockPromptString) are consumed by EID Authentication directly from the same registry hive and can be configured through the Microsoft-supplied SmartCard.admx template that ships with Windows.</string>
+Note: The standard Windows smart-card credential provider policies (AllowSignatureOnlyKeys, AllowCertificatesWithNoEKU, AllowTimeInvalidCertificates, AllowIntegratedUnblock, FilterDuplicateCertificates, ForceReadingAllCertificates, ReverseSubject, X509HintsNeeded, CertPropEnabledString, CertPropRootEnabledString, RootsCleanupOption, and IntegratedUnblockPromptString) are consumed by OpenAccess EID directly from the same registry hive and can be configured through the Microsoft-supplied SmartCard.admx template that ships with Windows.</string>
 
       <string id="RequireCardBoundCredentials">Require card-bound (certificate-encrypted) stored credentials</string>
-      <string id="RequireCardBoundCredentials_Help">When enabled, EID Authentication only creates, uses, and imports credentials whose Windows password is sealed to the smart card's key (certificate-encrypted / "crypted" storage). Credentials stored with machine-bound DPAPI or in clear text are refused at creation, at logon, and at migration import. This ensures the stored password cannot be recovered from the machine without the smart card (and PIN).
+      <string id="RequireCardBoundCredentials_Help">When enabled, OpenAccess EID only creates, uses, and imports credentials whose Windows password is sealed to the smart card's key (certificate-encrypted / "crypted" storage). Credentials stored with machine-bound DPAPI or in clear text are refused at creation, at logon, and at migration import. This ensures the stored password cannot be recovered from the machine without the smart card (and PIN).
 
 When disabled or not configured, all storage types are permitted (product default behaviour).
 
 Important: This requires decrypt-capable smart cards (for example MyEID / Aventra and YubiKey PIV). Signature-only cards cannot use card-bound storage and will fail to enrol or log on while this policy is enabled - leave it disabled for signature-only deployments.
 
-Default: Disabled. The EID Authentication installer offers to enable this at install time (enabled by default there).
+Default: Disabled. The OpenAccess EID installer offers to enable this at install time (enabled by default there).
 
 This policy is written to:
 HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider!RequireCardBoundCredentials (DWORD)</string>
@@ -50,49 +50,49 @@ Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider!R
       <string id="Cat_EIDLogging">Logging (EID Log Manager)</string>
 
       <string id="LogCSVEnabled">Enable CSV audit logging</string>
-      <string id="LogCSVEnabled_Help">When enabled, EID Authentication writes structured audit events to a CSV log file. When disabled, CSV logging is off. When not configured, the local EID Log Manager setting applies.
+      <string id="LogCSVEnabled_Help">When enabled, OpenAccess EID writes structured audit events to a CSV log file. When disabled, CSV logging is off. When not configured, the local EID Log Manager setting applies.
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!CSVEnabled (DWORD)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!CSVEnabled (DWORD)</string>
 
       <string id="LogCSVLogPath">CSV log file path</string>
-      <string id="LogCSVLogPath_Help">Full path to the CSV audit log file (for example C:\ProgramData\EIDAuthentication\logs\events.csv). When not configured, the local setting applies.
+      <string id="LogCSVLogPath_Help">Full path to the CSV audit log file (for example C:\ProgramData\OpenAccessEID\logs\events.csv). When not configured, the local setting applies.
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!CSVLogPath (REG_SZ)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!CSVLogPath (REG_SZ)</string>
 
       <string id="LogCSVMaxFileSize">Maximum CSV file size (MB)</string>
       <string id="LogCSVMaxFileSize_Help">Maximum size in megabytes the CSV log may reach before it is rotated. Range 1-1024. When not configured, the local setting applies (default 64).
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!CSVMaxFileSize (DWORD)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!CSVMaxFileSize (DWORD)</string>
 
       <string id="LogCSVFileCount">Rotated CSV file count</string>
       <string id="LogCSVFileCount_Help">Number of rotated CSV log files to keep. Range 1-100. When not configured, the local setting applies (default 5).
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!CSVFileCount (DWORD)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!CSVFileCount (DWORD)</string>
 
       <string id="LogCSVColumns">CSV column set</string>
       <string id="LogCSVColumns_Help">Which columns are written to the CSV log, chosen from presets. When not configured, the local setting applies (default Standard).
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!CSVColumns (DWORD bitmask)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!CSVColumns (DWORD bitmask)</string>
 
       <string id="LogCSVCategoryFilter">Event categories to log</string>
       <string id="LogCSVCategoryFilter_Help">Which event categories are written to the CSV log, chosen from presets. When not configured, the local setting applies (default All categories).
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!CSVCategoryFilter (DWORD bitmask)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!CSVCategoryFilter (DWORD bitmask)</string>
 
       <string id="LogCSVVerbose">Include verbose-level events</string>
       <string id="LogCSVVerbose_Help">When enabled, verbose-level events are included in the CSV log. When not configured, the local setting applies.
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!CSVVerbose (DWORD)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!CSVVerbose (DWORD)</string>
 
       <string id="LogDiagnosticsEnabled">Enable diagnostics trace capture</string>
       <string id="LogDiagnosticsEnabled_Help">When enabled, free-text provider diagnostic traces are captured to diagnostics.log. When not configured, the local setting applies.
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!DiagnosticsEnabled (DWORD)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!DiagnosticsEnabled (DWORD)</string>
 
       <string id="LogDiagnosticsLevel">Diagnostics verbosity ceiling</string>
       <string id="LogDiagnosticsLevel_Help">The maximum trace verbosity captured to diagnostics.log. When not configured, the local setting applies (default Information).
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!DiagnosticsLevel (DWORD; 4=Information, 5=Verbose)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!DiagnosticsLevel (DWORD; 4=Information, 5=Verbose)</string>
 
       <string id="Cols_Minimal">Minimal (5 columns for compliance)</string>
       <string id="Cols_Standard">Standard (8 columns for typical auditing)</string>
@@ -109,27 +109,27 @@ Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!DiagnosticsLevel (
       <string id="TraceLevel">ETW trace verbosity level</string>
       <string id="TraceLevel_Help">Verbosity of the ETW trace session (the WMI autologger) that feeds the logging pipeline. When not configured, the local setting applies (default Information). Note: the trace consumer captures the provider at full verbosity regardless, so this mainly affects the raw .etl session; the CSV output is shaped by the CSV policies above.
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!TraceLevel (DWORD; 1=Critical .. 5=Verbose)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!TraceLevel (DWORD; 1=Critical .. 5=Verbose)</string>
 
       <string id="TraceLogPath">ETW trace (.etl) file path</string>
       <string id="TraceLogPath_Help">Full path to the ETW trace (.etl) file for the autologger session. When not configured, the local/default path applies.
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!LogPath (REG_SZ)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!LogPath (REG_SZ)</string>
 
       <string id="TraceMaxFileSize">ETW trace maximum file size (MB)</string>
       <string id="TraceMaxFileSize_Help">Maximum size in megabytes of the ETW .etl file. Range 1-1024. When not configured, the local setting applies (default 64).
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!MaxFileSize (DWORD)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!MaxFileSize (DWORD)</string>
 
       <string id="TraceFileCounter">ETW trace file count</string>
       <string id="TraceFileCounter_Help">Number of ETW .etl files to keep. Range 1-100. When not configured, the local setting applies (default 5).
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!FileCounter (DWORD)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!FileCounter (DWORD)</string>
 
       <string id="TraceAutoStart">Start ETW trace session at boot</string>
       <string id="TraceAutoStart_Help">When enabled, the ETW autologger session starts automatically at boot. When not configured, the local setting applies (default off).
 
-Registry: HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager!AutoStart (DWORD)</string>
+Registry: HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager!AutoStart (DWORD)</string>
 
       <string id="Lvl_Critical">Critical (1)</string>
       <string id="Lvl_Error">Error (2)</string>

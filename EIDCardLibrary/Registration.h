@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -17,8 +17,8 @@
 */
 
 
-void EIDAuthenticationPackageDllRegister();
-void EIDAuthenticationPackageDllUnRegister();
+void OpenAccessEIDPackageDllRegister();
+void OpenAccessEIDPackageDllUnRegister();
 void EIDPasswordChangeNotificationDllRegister();
 void EIDPasswordChangeNotificationDllUnRegister();
 void EIDCredentialProviderDllRegister();
@@ -34,7 +34,7 @@ BOOL DisableLogging();
 BOOL IsLoggingEnabled();
 
 // Trace configuration functions
-// Registry path: HKLM\SOFTWARE\EIDAuthentication\LogManager
+// Registry path: HKLM\SOFTWARE\OpenAccessEID\LogManager
 BOOL SetTraceConfig(DWORD dwLevel, LPCWSTR szLogPath, DWORD dwMaxSizeMB, DWORD dwFileCounter, BOOL fAutoStart);
 BOOL GetTraceConfig(DWORD* pdwLevel, LPWSTR szLogPath, DWORD cchPath, DWORD* pdwMaxSizeMB, DWORD* pdwFileCounter, BOOL* pfAutoStart);
 void EnableCrashDump(PTSTR szPath);

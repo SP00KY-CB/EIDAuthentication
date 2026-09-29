@@ -1,5 +1,5 @@
 /*
-    EID Authentication - fuzz target: EID_SMARTCARD_CSP_INFO
+    OpenAccess EID - fuzz target: EID_SMARTCARD_CSP_INFO
     Copyright (C) 2026 Contributors
 
     This library is free software; you can redistribute it and/or

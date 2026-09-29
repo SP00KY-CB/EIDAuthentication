@@ -1,6 +1,6 @@
-# EIDAuthentication — Security Review
+# OpenAccessEID — Security Review
 
-**Scope:** full source audit of the EIDAuthentication smart-card logon stack (~44k LOC, C++/Win32).
+**Scope:** full source audit of the OpenAccessEID smart-card logon stack (~44k LOC, C++/Win32).
 **Method:** eight parallel domain reviewers (auth core, PKI/cert trust, stored-cred crypto, credential
 provider, migration import, config/GPO/priv-esc, DLL/service/install, IPC/LSA-call/memory), followed by
 manual verification of the highest-severity findings against the code.
@@ -52,7 +52,7 @@ smart-card guarantee to "any attacker cert works" under the right conditions.
 
 | # | Sev | Title | Location |
 |---|-----|-------|----------|
-| H1 | High | Unvalidated client pointers in `LsaApCallPackageUntrusted` → arbitrary read / OOB write / crash in LSASS | `EIDAuthenticationPackage.cpp:322,328,340-344,425-427` |
+| H1 | High | Unvalidated client pointers in `LsaApCallPackageUntrusted` → arbitrary read / OOB write / crash in LSASS | `OpenAccessEIDPackage.cpp:322,328,340-344,425-427` |
 | H2 | High | Unbounded `memcpy` into fixed 32-byte `KEY_BLOB.Data` → LSASS stack overflow | `StoredCredentialManagement.cpp:1596-1597` |
 | H3 | High | DPAPI/ClearText stored credentials are recoverable without the card | `StoredCredentialManagement.cpp:142-170, 1785-1793, 1927-1946` |
 | H4 | High | Migration import provisions users/passwords/admin-group with no file authenticity | `Import.cpp:373-559`; `LsaClient.cpp:595-698` |
@@ -71,7 +71,7 @@ smart-card guarantee to "any attacker cert works" under the right conditions.
 ## 3. High-severity findings
 
 ### H1 — Arbitrary read / OOB in LSASS via `LsaApCallPackageUntrusted` (unprivileged local)
-**Location:** `EIDAuthenticationPackage/EIDAuthenticationPackage.cpp:322, 328, 340-344, 425-427`
+**Location:** `OpenAccessEIDPackage/OpenAccessEIDPackage.cpp:322, 328, 340-344, 425-427`
 **Category:** memory-safety / info-disclosure (LSASS, SYSTEM) · **Confidence:** high (verified in code)
 
 Any local process can `LsaConnectUntrusted` + `LsaCallAuthenticationPackage` into this handler, which
@@ -124,7 +124,7 @@ memcpy(bKey.Data, pResponse, dwResponseSize);               // no check dwRespon
 `bKey` is a stack local; `Data` is 32 bytes. The only nearby guard (line 1585) checks the **challenge**
 size, never the **response** size. `dwResponseSize`/`pResponse` are the plaintext output of the card
 CSP's `CryptDecrypt` (or the caller's `dwResponseSize` on the GINA response path,
-`EIDAuthenticationPackage.cpp:588-603`) — an oversized response smashes the LSASS stack → potential
+`OpenAccessEIDPackage.cpp:588-603`) — an oversized response smashes the LSASS stack → potential
 **SYSTEM code execution**.
 
 **Exploit preconditions:** a malicious/emulated CSP or physical card presenting an enrolled cert
@@ -231,7 +231,7 @@ confirmation; never auto-add to privileged groups from file data.
   buffer at `helpers.cpp:246`.
 
 - **M5 — SYSTEM log files created with inherited ACLs.** `CSVLogger.cpp:249`, `CSVConfig.cpp:170`,
-  `EIDTraceConsumer.cpp:187` create `C:\ProgramData\EIDAuthentication\logs\...` via
+  `EIDTraceConsumer.cpp:187` create `C:\ProgramData\OpenAccessEID\logs\...` via
   `CreateDirectoryW(..., nullptr)` + `CreateFileW(OPEN_ALWAYS)` with no explicit DACL. The CSV writer runs
   in **LSASS/SYSTEM** and the diagnostics writer in the **LocalSystem** trace-consumer service. Standard
   users inherit read + create rights on ProgramData → (a) read the auth audit trail (usernames/domains/

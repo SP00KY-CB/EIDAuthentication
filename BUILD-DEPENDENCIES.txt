@@ -1,11 +1,11 @@
-# EID Authentication - Build & Runtime Requirements
+# OpenAccess EID - Build & Runtime Requirements
 # ===================================================
 # This is a native Windows C++ project. This file lists the software that
 # must be installed on the build host (and on the target machine at
 # runtime) to compile, package, and exercise the solution.
 #
 # Build entry point: build.ps1  (PowerShell)
-# Solution file:     EIDCredentialProvider.sln
+# Solution file:     OpenAccessEID.sln
 # Target platform:   x64 (primary); Win32 supported for legacy projects
 # CI reference:      .github/workflows/windows-ci.yaml
 
@@ -80,7 +80,7 @@ Windows Driver Kit (WDK) 10          # only if rebuilding/signing smart-card min
 # These are required on any machine that will actually exercise the
 # Credential Provider / LSA package against real smart cards or YubiKeys.
 # They are NOT required to merely compile the solution, but are needed for
-# end-to-end verification of EIDCredentialProvider, EIDAuthenticationPackage,
+# end-to-end verification of EIDCredentialProvider, OpenAccessEIDPackage,
 # EIDMigrate, and EIDManageUsers.
 
 # --- Windows built-in services (must be running) ---

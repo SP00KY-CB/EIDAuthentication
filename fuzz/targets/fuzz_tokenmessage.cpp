@@ -1,5 +1,5 @@
 /*
-    EID Authentication - fuzz target: SSP challenge/response token messages
+    OpenAccess EID - fuzz target: SSP challenge/response token messages
     Copyright (C) 2026 Contributors
 
     This library is free software; you can redistribute it and/or

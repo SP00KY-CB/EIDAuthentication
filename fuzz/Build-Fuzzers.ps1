@@ -3,7 +3,7 @@
     Build the EID libFuzzer targets and the PoC regression binary.
 
 .DESCRIPTION
-    These binaries are deliberately NOT part of EIDCredentialProvider.sln and
+    These binaries are deliberately NOT part of OpenAccessEID.sln and
     NOT written to x64\Debug or x64\Release. Two things in the shipping
     pipeline glob that directory:
 

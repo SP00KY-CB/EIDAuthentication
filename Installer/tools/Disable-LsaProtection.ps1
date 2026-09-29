@@ -5,8 +5,8 @@
     Disables Windows LSA Protection (RunAsPPL) so unsigned LSA plug-ins can load.
 
 .DESCRIPTION
-    EID Authentication ships three DLLs that Windows loads into LSASS:
-      - EIDAuthenticationPackage.dll   (LSA Authentication Package)
+    OpenAccess EID ships three DLLs that Windows loads into LSASS:
+      - OpenAccessEIDPackage.dll   (LSA Authentication Package)
       - EIDCredentialProvider.dll      (Credential Provider)
       - EIDPasswordChangeNotification.dll (Password Change Notification)
 
@@ -64,7 +64,7 @@ if (-not $isAdmin) {
 
 $LsaKey        = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
 $AuditKey      = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LSASS.exe'
-$BackupDir     = Join-Path $env:ProgramData 'EIDAuthentication\LsaProtectionBackup'
+$BackupDir     = Join-Path $env:ProgramData 'OpenAccessEID\LsaProtectionBackup'
 $BackupFile    = Join-Path $BackupDir 'RunAsPPL.backup.txt'
 
 function Write-Banner {
@@ -133,12 +133,12 @@ function Show-WarningPage {
     Write-Host "Security impact of disabling LSA Protection:" -ForegroundColor Cyan
     Write-Host "  * Malware running with admin/SYSTEM privileges can read LSASS memory" -ForegroundColor Gray
     Write-Host "  * Credential-theft tools (Mimikatz et al.) will work against this host" -ForegroundColor Gray
-    Write-Host "  * Unsigned LSA plug-ins (including the EID Authentication beta) will load" -ForegroundColor Gray
+    Write-Host "  * Unsigned LSA plug-ins (including the OpenAccess EID beta) will load" -ForegroundColor Gray
     Write-Host "  * Credential Guard (if present) continues to provide SOME isolation" -ForegroundColor Gray
     Write-Host "    but NTLM/Kerberos cache memory is no longer hardened against dumping." -ForegroundColor Gray
     Write-Host ""
     Write-Host "When to use this:" -ForegroundColor Cyan
-    Write-Host "  * Beta / dev testing of unsigned EID Authentication builds." -ForegroundColor Gray
+    Write-Host "  * Beta / dev testing of unsigned OpenAccess EID builds." -ForegroundColor Gray
     Write-Host "  * Dedicated lab machines only." -ForegroundColor Gray
     Write-Host "  * NEVER on production workstations, domain controllers, or shared hosts." -ForegroundColor Gray
     Write-Host "  * NEVER on machines with domain credentials or cached admin tokens" -ForegroundColor Gray
@@ -189,7 +189,7 @@ function Save-CurrentState {
         New-Item -Path $BackupDir -ItemType Directory -Force | Out-Null
     }
     $lines = @(
-        "# EID Authentication - LSA Protection state backup",
+        "# OpenAccess EID - LSA Protection state backup",
         "# Created: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ') UTC",
         "# Use these values if you want to manually restore the original state.",
         "",

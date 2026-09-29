@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -524,7 +524,7 @@ HRESULT EID_CSV_SaveConfigToRegistry(const EID_CSV_CONFIG& config)
 }
 
 // ================================================================
-// Apply Group Policy overrides (HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager)
+// Apply Group Policy overrides (HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager)
 // Any value present under the policy key wins over local file/registry config.
 // ================================================================
 void EID_CSV_ApplyPolicyOverrides(EID_CSV_CONFIG& config)  // NOSONAR - COMPLEXITY-01: sequential per-value overrides, logic verified

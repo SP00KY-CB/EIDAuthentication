@@ -1,5 +1,5 @@
 /*
-    EID Authentication - fuzz target: EID_PRIVATE_DATA stored-credential blob
+    OpenAccess EID - fuzz target: EID_PRIVATE_DATA stored-credential blob
     Copyright (C) 2026 Contributors
 
     This library is free software; you can redistribute it and/or

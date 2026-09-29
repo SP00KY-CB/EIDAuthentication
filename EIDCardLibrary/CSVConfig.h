@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -216,12 +216,12 @@ struct EID_CSV_CONFIG
 // ================================================================
 // Configuration Paths
 // ================================================================
-#define EID_CSV_CONFIG_DIR          L"C:\\ProgramData\\EIDAuthentication"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
-#define EID_CSV_CONFIG_PATH         L"C:\\ProgramData\\EIDAuthentication\\logging.json"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
-#define EID_CSV_DEFAULT_LOG_PATH    L"C:\\ProgramData\\EIDAuthentication\\logs\\events.csv"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
-#define EID_CSV_CONFIG_KEY          L"SOFTWARE\\EIDAuthentication\\LogManager"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
+#define EID_CSV_CONFIG_DIR          L"C:\\ProgramData\\OpenAccessEID"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
+#define EID_CSV_CONFIG_PATH         L"C:\\ProgramData\\OpenAccessEID\\logging.json"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
+#define EID_CSV_DEFAULT_LOG_PATH    L"C:\\ProgramData\\OpenAccessEID\\logs\\events.csv"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
+#define EID_CSV_CONFIG_KEY          L"SOFTWARE\\OpenAccessEID\\LogManager"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
 // Group Policy key: values present here override the local file/registry config (ADMX-managed).
-#define EID_CSV_POLICY_KEY          L"SOFTWARE\\Policies\\EIDAuthentication\\LogManager"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
+#define EID_CSV_POLICY_KEY          L"SOFTWARE\\Policies\\OpenAccessEID\\LogManager"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
 
 // ================================================================
 // M5: Restrictive DACL for the log/config directory.
@@ -298,7 +298,7 @@ inline void EnsureLogDirSecured(PCWSTR pwszDir)
 // Load configuration (tries JSON file, then registry, then defaults; then applies GPO overrides)
 HRESULT EID_CSV_LoadConfig(EID_CSV_CONFIG& config);
 
-// Apply Group Policy overrides from HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager on top of
+// Apply Group Policy overrides from HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager on top of
 // an already-loaded config. Any value present under the policy key wins over local file/registry config.
 void EID_CSV_ApplyPolicyOverrides(EID_CSV_CONFIG& config);
 

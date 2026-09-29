@@ -1,5 +1,5 @@
 /*
-    EID Authentication - fuzz harness oracle reporting
+    OpenAccess EID - fuzz harness oracle reporting
     Copyright (C) 2026 Contributors
 
     This library is free software; you can redistribute it and/or

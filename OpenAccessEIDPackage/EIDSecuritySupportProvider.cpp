@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -145,8 +145,8 @@ extern "C"
 	)
 	{
 		// Static buffers for SecPkgInfo Name/Comment (non-const SEC_WCHAR* required by API)
-		static SEC_WCHAR s_szPackageName[] = TEXT("EIDAuthenticationPackage");
-		static SEC_WCHAR s_szPackageComment[] = TEXT("EIDAuthenticationPackage");
+		static SEC_WCHAR s_szPackageName[] = TEXT("OpenAccessEIDPackage");
+		static SEC_WCHAR s_szPackageComment[] = TEXT("OpenAccessEIDPackage");
 
 		PackageInfo->fCapabilities = SECPKG_FLAG_LOGON |
 			SECPKG_FLAG_MULTI_REQUIRED|

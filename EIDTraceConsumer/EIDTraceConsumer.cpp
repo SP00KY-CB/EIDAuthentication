@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -143,9 +143,9 @@ BOOL g_ServiceRunning = TRUE;  // NOSONAR - GLOBAL-01: runtime-mutable service s
 HANDLE g_StopEvent = nullptr;  // NOSONAR - GLOBAL-01: handle assigned at runtime
 
 // Registry key for configuration
-#define EID_CSV_CONFIG_KEY L"SOFTWARE\\EIDAuthentication\\LogManager"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
+#define EID_CSV_CONFIG_KEY L"SOFTWARE\\OpenAccessEID\\LogManager"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
 // Group Policy key: values here override the local config (ADMX-managed).
-#define EID_CSV_POLICY_KEY L"SOFTWARE\\Policies\\EIDAuthentication\\LogManager"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
+#define EID_CSV_POLICY_KEY L"SOFTWARE\\Policies\\OpenAccessEID\\LogManager"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
 
 // CSV log file handle and state
 WCHAR g_szCsvPath[MAX_PATH] = {0};  // NOSONAR - GLOBAL-01: runtime-mutable C-style path buffer
@@ -215,7 +215,7 @@ BOOL LoadCsvConfiguration()
                           reinterpret_cast<LPBYTE>(g_szCsvPath), &dwSize);  // NOSONAR - BYTE-01: BYTE buffer interops with Win32 API
     if (err != ERROR_SUCCESS || g_szCsvPath[0] == L'\0')
     {
-        wcscpy_s(g_szCsvPath, L"C:\\ProgramData\\EIDAuthentication\\logs\\events.csv");
+        wcscpy_s(g_szCsvPath, L"C:\\ProgramData\\OpenAccessEID\\logs\\events.csv");
     }
 
     // Read max file size
@@ -252,7 +252,7 @@ BOOL LoadCsvConfiguration()
 
     RegCloseKey(hKey);
 
-    // Group Policy overrides (HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager) win over the
+    // Group Policy overrides (HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager) win over the
     // local config for the values this service consumes.
     HKEY hPolicy = nullptr;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, EID_CSV_POLICY_KEY, 0, KEY_READ, &hPolicy) == ERROR_SUCCESS)
@@ -298,7 +298,7 @@ BOOL LoadCsvConfiguration()
     wcscpy_s(g_szDiagPath, g_szCsvPath);
     WCHAR* pSlash = wcsrchr(g_szDiagPath, L'\\');
     if (pSlash) { *(pSlash + 1) = L'\0'; wcscat_s(g_szDiagPath, L"diagnostics.log"); }  // NOSONAR - SCOPE-01: declaration kept outside if for readability
-    else        { wcscpy_s(g_szDiagPath, L"C:\\ProgramData\\EIDAuthentication\\logs\\diagnostics.log"); }
+    else        { wcscpy_s(g_szDiagPath, L"C:\\ProgramData\\OpenAccessEID\\logs\\diagnostics.log"); }
 
     return g_fCsvEnabled;
 }

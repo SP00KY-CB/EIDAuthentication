@@ -1,6 +1,6 @@
-# EID Authentication - Roadmap
+# OpenAccess EID - Roadmap
 
-This document tracks unfinished features, known limitations, and potential enhancements for the EID Authentication project.
+This document tracks unfinished features, known limitations, and potential enhancements for the OpenAccess EID project.
 
 ---
 
@@ -31,8 +31,8 @@ The following features have been fully implemented:
 ### 1. SSP Optional Functions (Conditional)
 
 **Files:**
-- `EIDAuthenticationPackage/EIDSecuritySupportProvider.cpp`
-- `EIDAuthenticationPackage/EIDSecuritySupportProviderUserMode.cpp`
+- `OpenAccessEIDPackage/EIDSecuritySupportProvider.cpp`
+- `OpenAccessEIDPackage/EIDSecuritySupportProviderUserMode.cpp`
 
 **Current Behavior:** The following Security Support Provider (SSP) functions return `STATUS_NOT_IMPLEMENTED`:
 

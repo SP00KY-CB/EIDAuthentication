@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  EID Authentication - Group Policy administrative template
+  OpenAccess EID - Group Policy administrative template
 
-  This ADMX exposes the custom policies introduced by the EID Authentication
+  This ADMX exposes the custom policies introduced by the OpenAccess EID
   product. Most of the smart-card credential-provider policies consumed by
   the product (AllowSignatureOnlyKeys, AllowIntegratedUnblock,
   CertPropEnabledString, FilterDuplicateCertificates, etc.) are already
@@ -14,7 +14,7 @@
 -->
 <policyDefinitions revision="1.0" schemaVersion="1.0">
   <policyNamespaces>
-    <target prefix="eidauth" namespace="EIDAuthentication.Policies" />
+    <target prefix="oaeid" namespace="OpenAccessEID.Policies" />
     <using prefix="windows" namespace="Microsoft.Policies.Windows" />
   </policyNamespaces>
 
@@ -27,11 +27,11 @@
   </supportedOn>
 
   <categories>
-    <category name="EIDAuthentication" displayName="$(string.Cat_EIDAuthentication)">
+    <category name="OpenAccessEID" displayName="$(string.Cat_OpenAccessEID)">
       <parentCategory ref="windows:WindowsComponents" />
     </category>
     <category name="EIDLogging" displayName="$(string.Cat_EIDLogging)">
-      <parentCategory ref="EIDAuthentication" />
+      <parentCategory ref="OpenAccessEID" />
     </category>
   </categories>
 
@@ -43,7 +43,7 @@
             explainText="$(string.EnforceCSPWhitelist_Help)"
             key="SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider"
             valueName="EnforceCSPWhitelist">
-      <parentCategory ref="EIDAuthentication" />
+      <parentCategory ref="OpenAccessEID" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
       <enabledValue>
         <decimal value="1" />
@@ -59,7 +59,7 @@
             explainText="$(string.RequireCardBoundCredentials_Help)"
             key="SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider"
             valueName="RequireCardBoundCredentials">
-      <parentCategory ref="EIDAuthentication" />
+      <parentCategory ref="OpenAccessEID" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
       <enabledValue>
         <decimal value="1" />
@@ -75,17 +75,17 @@
             explainText="$(string.RequireRevocationCheck_Help)"
             key="SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider"
             valueName="RequireRevocationCheck">
-      <parentCategory ref="EIDAuthentication" />
+      <parentCategory ref="OpenAccessEID" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
       <enabledValue><decimal value="1" /></enabledValue>
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
 
-    <!-- ============ EIDLogManager settings (SOFTWARE\Policies\EIDAuthentication\LogManager) ============ -->
+    <!-- ============ EIDLogManager settings (SOFTWARE\Policies\OpenAccessEID\LogManager) ============ -->
 
     <policy name="LogCSVEnabled" class="Machine"
             displayName="$(string.LogCSVEnabled)" explainText="$(string.LogCSVEnabled_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager" valueName="CSVEnabled">
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager" valueName="CSVEnabled">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
       <enabledValue><decimal value="1" /></enabledValue>
@@ -94,7 +94,7 @@
 
     <policy name="LogCSVLogPath" class="Machine"
             displayName="$(string.LogCSVLogPath)" explainText="$(string.LogCSVLogPath_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.LogCSVLogPath)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -105,7 +105,7 @@
 
     <policy name="LogCSVMaxFileSize" class="Machine"
             displayName="$(string.LogCSVMaxFileSize)" explainText="$(string.LogCSVMaxFileSize_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.LogCSVMaxFileSize)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -116,7 +116,7 @@
 
     <policy name="LogCSVFileCount" class="Machine"
             displayName="$(string.LogCSVFileCount)" explainText="$(string.LogCSVFileCount_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.LogCSVFileCount)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -127,7 +127,7 @@
 
     <policy name="LogCSVColumns" class="Machine"
             displayName="$(string.LogCSVColumns)" explainText="$(string.LogCSVColumns_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.LogCSVColumns)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -143,7 +143,7 @@
 
     <policy name="LogCSVCategoryFilter" class="Machine"
             displayName="$(string.LogCSVCategoryFilter)" explainText="$(string.LogCSVCategoryFilter_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.LogCSVCategoryFilter)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -158,7 +158,7 @@
 
     <policy name="LogCSVVerbose" class="Machine"
             displayName="$(string.LogCSVVerbose)" explainText="$(string.LogCSVVerbose_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager" valueName="CSVVerbose">
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager" valueName="CSVVerbose">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
       <enabledValue><decimal value="1" /></enabledValue>
@@ -167,7 +167,7 @@
 
     <policy name="LogDiagnosticsEnabled" class="Machine"
             displayName="$(string.LogDiagnosticsEnabled)" explainText="$(string.LogDiagnosticsEnabled_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager" valueName="DiagnosticsEnabled">
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager" valueName="DiagnosticsEnabled">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
       <enabledValue><decimal value="1" /></enabledValue>
@@ -176,7 +176,7 @@
 
     <policy name="LogDiagnosticsLevel" class="Machine"
             displayName="$(string.LogDiagnosticsLevel)" explainText="$(string.LogDiagnosticsLevel_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.LogDiagnosticsLevel)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -192,7 +192,7 @@
 
     <policy name="TraceLevel" class="Machine"
             displayName="$(string.TraceLevel)" explainText="$(string.TraceLevel_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.TraceLevel)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -209,7 +209,7 @@
 
     <policy name="TraceLogPath" class="Machine"
             displayName="$(string.TraceLogPath)" explainText="$(string.TraceLogPath_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.TraceLogPath)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -220,7 +220,7 @@
 
     <policy name="TraceMaxFileSize" class="Machine"
             displayName="$(string.TraceMaxFileSize)" explainText="$(string.TraceMaxFileSize_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.TraceMaxFileSize)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -231,7 +231,7 @@
 
     <policy name="TraceFileCounter" class="Machine"
             displayName="$(string.TraceFileCounter)" explainText="$(string.TraceFileCounter_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager"
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager"
             presentation="$(presentation.TraceFileCounter)">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
@@ -242,7 +242,7 @@
 
     <policy name="TraceAutoStart" class="Machine"
             displayName="$(string.TraceAutoStart)" explainText="$(string.TraceAutoStart_Help)"
-            key="SOFTWARE\Policies\EIDAuthentication\LogManager" valueName="AutoStart">
+            key="SOFTWARE\Policies\OpenAccessEID\LogManager" valueName="AutoStart">
       <parentCategory ref="EIDLogging" />
       <supportedOn ref="SUPPORTED_EIDAuth_1_0" />
       <enabledValue><decimal value="1" /></enabledValue>

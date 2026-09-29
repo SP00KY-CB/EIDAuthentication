@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -27,9 +27,15 @@
 
 #include <NTSecAPI.h>
 
-constexpr const char* AUTHENTICATIONPACKAGENAME = "EIDAuthenticationPackage";
-constexpr const wchar_t* AUTHENTICATIONPACKAGENAMEW = L"EIDAuthenticationPackage";
-#define AUTHENTICATIONPACKAGENAMET TEXT("EIDAuthenticationPackage")  // NOSONAR - MACRO-02: TEXT() requires macro context
+constexpr const char* AUTHENTICATIONPACKAGENAME = "OpenAccessEIDPackage";
+constexpr const wchar_t* AUTHENTICATIONPACKAGENAMEW = L"OpenAccessEIDPackage";
+#define AUTHENTICATIONPACKAGENAMET TEXT("OpenAccessEIDPackage")  // NOSONAR - MACRO-02: TEXT() requires macro context
+
+// Package name used up to v1.3.00, before the project was renamed. Kept only so
+// registration can strip stale entries from the LSA multi-sz values: an entry
+// naming a DLL that no longer exists in System32 can leave a machine unable to
+// authenticate, so this must outlive the rename.
+#define LEGACY_AUTHENTICATIONPACKAGENAMET TEXT("EIDAuthenticationPackage")  // NOSONAR - MACRO-02: TEXT() requires macro context
 
 // The Windows SDK (WinCred.h) defines CERT_HASH_LENGTH as 20 (SHA-1), but we use SHA-256 (32)
 // Undefine first to ensure our definition takes precedence without warnings

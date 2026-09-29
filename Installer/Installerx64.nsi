@@ -11,7 +11,7 @@
 ;General
 
   ;Name and file
-  Name "EID Authentication"
+  Name "OpenAccess EID"
   OutFile "EIDInstallx64.exe"
 
   ;Installer icon (optional - copied by build.ps1 if exists)
@@ -19,10 +19,10 @@
   UninstallIcon "installer.ico"
 
   ;Default installation folder
-  InstallDir "$PROGRAMFILES64\EID Authentication"
+  InstallDir "$PROGRAMFILES64\OpenAccess EID"
 
   ;Get installation folder from registry if available
-  InstallDirRegKey HKLM "Software\EIDAuthentication" "InstallPath"
+  InstallDirRegKey HKLM "Software\OpenAccessEID" "InstallPath"
 
   ;Request application privileges for Windows Vista
   RequestExecutionLevel admin
@@ -80,6 +80,14 @@
   Var /GLOBAL SecurityPageShown
 
 ;--------------------------------
+;Upgrade state
+
+  ; 1 when .onInit found and removed an installation made under the product's
+  ; former name, EID Authentication (v1.3.00 and earlier). The Core section
+  ; then finishes the migration and warns about orphaned Group Policy.
+  Var /GLOBAL MigratedFromLegacy
+
+;--------------------------------
 ;Uninstaller Variables
 
   Var /GLOBAL Uninstall_RemoveMappings
@@ -94,12 +102,50 @@ Section "Core" SecCore
   ; Initialize install size counter
   StrCpy $InstallSize 0
 
+  ;--------------------------------------------------------------------
+  ; Migration from EID Authentication (v1.3.00 and earlier), part 2.
+  ; Part 1 in .onInit has already copied the LogManager settings across and
+  ; run the old uninstaller, which deregistered the legacy LSA package
+  ; (EIDAuthenticationPackage), scheduled its DLL for deletion and removed
+  ; the old registry keys. What is left is state the old uninstaller does not
+  ; own.
+  ;--------------------------------------------------------------------
+  ${If} $MigratedFromLegacy == 1
+    DetailPrint "Completing migration from EID Authentication..."
+
+    ; Logs, logging.json and the LSA-protection backup. A rename (not a copy)
+    ; keeps the directory's protected DACL and cannot lose an audit trail
+    ; half-way. If it fails - a file still held open, or the new directory
+    ; already exists - the old directory is left untouched.
+    ${If} ${FileExists} "C:\ProgramData\EIDAuthentication\*.*"
+      ${IfNot} ${FileExists} "C:\ProgramData\OpenAccessEID\*.*"
+        ClearErrors
+        Rename "C:\ProgramData\EIDAuthentication" "C:\ProgramData\OpenAccessEID"
+        ${If} ${Errors}
+          DetailPrint "WARNING: could not move C:\ProgramData\EIDAuthentication; existing logs remain there."
+        ${Else}
+          DetailPrint "Moved logs and configuration to C:\ProgramData\OpenAccessEID."
+        ${EndIf}
+      ${Else}
+        DetailPrint "C:\ProgramData\OpenAccessEID already exists; existing logs remain in C:\ProgramData\EIDAuthentication."
+      ${EndIf}
+    ${EndIf}
+
+    ; Belt and braces: remove anything an interrupted old uninstaller may
+    ; have left behind under the old name.
+    nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /F /TN "EID Authentication\Apply Trace Config"'
+    Delete "$WINDIR\PolicyDefinitions\EIDAuthentication.admx"
+    Delete "$WINDIR\PolicyDefinitions\en-US\EIDAuthentication.adml"
+    RMDir /r "$SMPROGRAMS\EID Authentication"
+    Delete "$DESKTOP\EID Authentication Configuration.lnk"
+  ${EndIf}
+
   ; Create installation directory
   SetOutPath "$INSTDIR"
 
   ; Install DLL files to Program Files
-  FILE "..\x64\Release\EIDAuthenticationPackage.dll"
-  Push "$INSTDIR\EIDAuthenticationPackage.dll"
+  FILE "..\x64\Release\OpenAccessEIDPackage.dll"
+  Push "$INSTDIR\OpenAccessEIDPackage.dll"
   Call AddFileSize
 
   FILE "..\x64\Release\EIDCredentialProvider.dll"
@@ -139,14 +185,14 @@ Section "Core" SecCore
   FILE "cred_provider.ico"
 
   ; Install Group Policy administrative templates (ADMX/ADML) so the
-  ; custom EID Authentication policies appear in gpedit.msc.
+  ; custom OpenAccess EID policies appear in gpedit.msc.
   ; Destination: %WINDIR%\PolicyDefinitions (picked up by Group Policy
   ; Editor automatically on next launch).
   DetailPrint "Installing Group Policy templates..."
   SetOutPath "$WINDIR\PolicyDefinitions"
-  File "PolicyDefinitions\EIDAuthentication.admx"
+  File "PolicyDefinitions\OpenAccessEID.admx"
   SetOutPath "$WINDIR\PolicyDefinitions\en-US"
-  File "PolicyDefinitions\en-US\EIDAuthentication.adml"
+  File "PolicyDefinitions\en-US\OpenAccessEID.adml"
   SetOutPath "$INSTDIR"
 
   ; Install manual-run administrator tools. Disable-LsaProtection.ps1 must
@@ -161,40 +207,40 @@ Section "Core" SecCore
   ; Copy DLLs to System32 (required for LSA and Credential Provider)
   ${DisableX64FSRedirection}
   ; Use /REBOOTOK to handle locked files (LSA loads DLLs at boot only)
-  Delete /REBOOTOK "$SYSDIR\EIDAuthenticationPackage.dll"
+  Delete /REBOOTOK "$SYSDIR\OpenAccessEIDPackage.dll"
   Delete /REBOOTOK "$SYSDIR\EIDCredentialProvider.dll"
   Delete /REBOOTOK "$SYSDIR\EIDPasswordChangeNotification.dll"
 
-  CopyFiles /SILENT "$INSTDIR\EIDAuthenticationPackage.dll" "$SYSDIR\EIDAuthenticationPackage.dll"
+  CopyFiles /SILENT "$INSTDIR\OpenAccessEIDPackage.dll" "$SYSDIR\OpenAccessEIDPackage.dll"
   CopyFiles /SILENT "$INSTDIR\EIDCredentialProvider.dll" "$SYSDIR\EIDCredentialProvider.dll"
   CopyFiles /SILENT "$INSTDIR\EIDPasswordChangeNotification.dll" "$SYSDIR\EIDPasswordChangeNotification.dll"
 
   ; Create Start Menu folder and shortcuts for all executables
-  CreateDirectory "$SMPROGRAMS\EID Authentication"
-  CreateShortcut "$SMPROGRAMS\EID Authentication\Configuration Wizard.lnk" "$INSTDIR\EIDConfigurationWizard.exe" "" "$INSTDIR\EIDConfigurationWizard.exe" 0
-  CreateShortcut "$SMPROGRAMS\EID Authentication\Credential Migration (CLI).lnk" "$INSTDIR\EIDMigrate.exe" "" "$INSTDIR\EIDMigrate.exe" 0
-  CreateShortcut "$SMPROGRAMS\EID Authentication\Credential Migration (GUI).lnk" "$INSTDIR\EIDMigrateUI.exe" "" "$INSTDIR\EIDMigrateUI.exe" 0
-  CreateShortcut "$SMPROGRAMS\EID Authentication\Manage Users.lnk" "$INSTDIR\EIDManageUsers.exe" "" "$INSTDIR\EIDManageUsers.exe" 0
-  CreateShortcut "$SMPROGRAMS\EID Authentication\Trace Consumer.lnk" "$INSTDIR\EIDTraceConsumer.exe" "" "$INSTDIR\EIDTraceConsumer.exe" 0
+  CreateDirectory "$SMPROGRAMS\OpenAccess EID"
+  CreateShortcut "$SMPROGRAMS\OpenAccess EID\Configuration Wizard.lnk" "$INSTDIR\EIDConfigurationWizard.exe" "" "$INSTDIR\EIDConfigurationWizard.exe" 0
+  CreateShortcut "$SMPROGRAMS\OpenAccess EID\Credential Migration (CLI).lnk" "$INSTDIR\EIDMigrate.exe" "" "$INSTDIR\EIDMigrate.exe" 0
+  CreateShortcut "$SMPROGRAMS\OpenAccess EID\Credential Migration (GUI).lnk" "$INSTDIR\EIDMigrateUI.exe" "" "$INSTDIR\EIDMigrateUI.exe" 0
+  CreateShortcut "$SMPROGRAMS\OpenAccess EID\Manage Users.lnk" "$INSTDIR\EIDManageUsers.exe" "" "$INSTDIR\EIDManageUsers.exe" 0
+  CreateShortcut "$SMPROGRAMS\OpenAccess EID\Trace Consumer.lnk" "$INSTDIR\EIDTraceConsumer.exe" "" "$INSTDIR\EIDTraceConsumer.exe" 0
   ; Elevated PowerShell shortcut for the LSA Protection toggle script.
   ; Uses -NoExit so the warning page and outcome remain visible after the
   ; script returns; ExecutionPolicy Bypass scoped to this process only.
-  CreateShortcut "$SMPROGRAMS\EID Authentication\Disable LSA Protection (manual).lnk" \
+  CreateShortcut "$SMPROGRAMS\OpenAccess EID\Disable LSA Protection (manual).lnk" \
     "powershell.exe" \
     '-NoProfile -NoExit -ExecutionPolicy Bypass -File "$INSTDIR\tools\Disable-LsaProtection.ps1"' \
     "$INSTDIR\cred_provider.ico" 0 SW_SHOWNORMAL "" \
     "Manually disable Windows LSA Protection so unsigned EID DLLs can load. Reads a warning page and requires confirmation."
-  CreateShortcut "$SMPROGRAMS\EID Authentication\Uninstall.lnk" "$INSTDIR\EIDUninstall.exe" "" "$INSTDIR\EIDUninstall.exe" 0
+  CreateShortcut "$SMPROGRAMS\OpenAccess EID\Uninstall.lnk" "$INSTDIR\EIDUninstall.exe" "" "$INSTDIR\EIDUninstall.exe" 0
 
   ; Create desktop shortcut pointing to Program Files
-  CreateShortcut "$DESKTOP\EID Authentication Configuration.lnk" "$INSTDIR\EIDConfigurationWizard.exe"
+  CreateShortcut "$DESKTOP\OpenAccess EID Configuration.lnk" "$INSTDIR\EIDConfigurationWizard.exe"
 
   ; Create uninstaller in installation directory
   WriteUninstaller "$INSTDIR\EIDUninstall.exe"
 
   ; Write installation path to registry
   SetRegView 64
-  WriteRegStr HKLM "Software\EIDAuthentication" "InstallPath" "$INSTDIR"
+  WriteRegStr HKLM "Software\OpenAccessEID" "InstallPath" "$INSTDIR"
 
   ; Security policy: RequireCardBoundCredentials (from the install-time question).
   ; 1 = only card-wrapped (crypted) credentials may be created / used at logon / imported;
@@ -212,22 +258,22 @@ Section "Core" SecCore
   ${EndIf}
 
   ; Uninstall info
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "DisplayName" "EID Authentication"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "UninstallString" "$INSTDIR\EIDUninstall.exe"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "Publisher" "EID Authentication"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "DisplayIcon" "$INSTDIR\cred_provider.ico"
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "NoModify" 1
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "NoRepair" 1
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "DisplayName" "OpenAccess EID"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "UninstallString" "$INSTDIR\EIDUninstall.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "Publisher" "OpenAccess EID"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "DisplayIcon" "$INSTDIR\cred_provider.ico"
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "NoModify" 1
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "NoRepair" 1
 
   ; Convert total install size from bytes to KB and write to registry
   IntOp $InstallSize $InstallSize / 1024
   ; Add ~100 KB for uninstaller and directory structures
   IntOp $InstallSize $InstallSize + 100
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "EstimatedSize" $InstallSize
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "EstimatedSize" $InstallSize
 
   ; Register authentication package (from System32)
-  ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",DllRegister'
+  ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\OpenAccessEIDPackage.dll",DllRegister'
 
   ; Configure Smart Card services to start automatically on boot. The
   ; default state on Windows is "Manual (Trigger Start)" which only
@@ -255,11 +301,15 @@ Section "Core" SecCore
   ; settings take effect without EIDLogManager. Runs as SYSTEM (needs HKLM autologger write).
   ; $SYSDIR resolves to the real System32 here (x64 FS redirection is disabled above).
   DetailPrint "Applying trace configuration and scheduling the GPO-apply task..."
-  nsExec::ExecToLog '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",DllApplyTraceConfigW'
-  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /TN "EID Authentication\Apply Trace Config" /TR "$SYSDIR\rundll32.exe $SYSDIR\EIDAuthenticationPackage.dll,DllApplyTraceConfigW"'
+  nsExec::ExecToLog '"$SYSDIR\rundll32.exe" "$SYSDIR\OpenAccessEIDPackage.dll",DllApplyTraceConfigW'
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /TN "OpenAccess EID\Apply Trace Config" /TR "$SYSDIR\rundll32.exe $SYSDIR\OpenAccessEIDPackage.dll,DllApplyTraceConfigW"'
 
   SetPluginUnload manual
   SetRebootFlag true
+
+  ${If} $MigratedFromLegacy == 1
+    MessageBox MB_OK|MB_ICONEXCLAMATION "EID Authentication has been upgraded to OpenAccess EID.$\n$\nGroup Policy set through the old EIDAuthentication administrative template is NOT carried over. After rebooting, apply the OpenAccess EID template and re-apply any logging policies.$\n$\nSmart-card enrollments are preserved - users do not need to re-enrol.$\n$\nA reboot is required before smart-card logon uses the new version." /SD IDOK
+  ${EndIf}
 
 SectionEnd
 
@@ -379,8 +429,8 @@ SectionGroupEnd
 ;Descriptions
 
   ;Language strings
-  LangString DESC_SecCore ${LANG_ENGLISH} "Core EID Authentication components: LSA Authentication Package, Credential Provider, Configuration Wizard, Log Manager, Migrate CLI/UI, and Manage Users tool. Always installed."
-  LangString DESC_SecCore ${LANG_FRENCH}  "Composants principaux EID Authentication: LSA, Credential Provider, assistant de configuration et outils associes. Toujours installes."
+  LangString DESC_SecCore ${LANG_ENGLISH} "Core OpenAccess EID components: LSA Authentication Package, Credential Provider, Configuration Wizard, Log Manager, Migrate CLI/UI, and Manage Users tool. Always installed."
+  LangString DESC_SecCore ${LANG_FRENCH}  "Composants principaux OpenAccess EID: LSA, Credential Provider, assistant de configuration et outils associes. Toujours installes."
 
   LangString DESC_SecMinidrivers ${LANG_ENGLISH} "Smart card minidrivers bundled with the installer. No internet access required at install time. Auto-selected for the Complete install type."
   LangString DESC_SecMinidrivers ${LANG_FRENCH}  "Minidrivers de carte a puce fournis avec l'installateur. Aucun acces Internet requis. Selectionnes automatiquement pour l'installation Complete."
@@ -407,7 +457,7 @@ SectionGroupEnd
 ;Install-time Security Options page
 
 Function ShowSecurityOptions
-  !insertmacro MUI_HEADER_TEXT "Security Options" "Choose how EID Authentication protects stored credentials."
+  !insertmacro MUI_HEADER_TEXT "Security Options" "Choose how OpenAccess EID protects stored credentials."
 
   nsDialogs::Create 1018
   Pop $0
@@ -475,7 +525,7 @@ Section "Uninstall"
   ; Unregister all components first (from System32)
   ${DisableX64FSRedirection}
   DetailPrint "Unregistering components..."
-  ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",DllUnRegister' $0
+  ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\OpenAccessEIDPackage.dll",DllUnRegister' $0
   ${If} $0 != 0
     DetailPrint "Warning: DllUnRegister returned error code $0 - continuing with manual cleanup"
   ${EndIf}
@@ -490,7 +540,7 @@ Section "Uninstall"
     ${DisableX64FSRedirection}
     ; rundll32 discards the entry point's HRESULT and exits 0 unless it fails to launch,
     ; so $2 only catches a launch failure - per-certificate results go to the ETW trace.
-    ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",CleanupEIDCertificates' $2
+    ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\OpenAccessEIDPackage.dll",CleanupEIDCertificates' $2
     ${If} $2 != 0
       DetailPrint "Warning: could not run certificate cleanup (code $2) - certificates remain"
     ${EndIf}
@@ -504,7 +554,7 @@ Section "Uninstall"
     ; This requires calling into the DLL since NSIS cannot directly manipulate LSA
     DetailPrint "Removing EID credential mappings from LSA..."
     ${DisableX64FSRedirection}
-    ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",CleanupLsaCredentials' $1
+    ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\OpenAccessEIDPackage.dll",CleanupLsaCredentials' $1
     ${If} $1 != 0
       DetailPrint "Note: LSA cleanup returned code $1 (may be expected if not installed)"
     ${EndIf}
@@ -514,21 +564,21 @@ Section "Uninstall"
   ${EndIf}
 
   ; Delete Start Menu shortcuts and folder
-  Delete "$SMPROGRAMS\EID Authentication\Configuration Wizard.lnk"
-  Delete "$SMPROGRAMS\EID Authentication\Credential Migration (CLI).lnk"
-  Delete "$SMPROGRAMS\EID Authentication\Credential Migration (GUI).lnk"
-  Delete "$SMPROGRAMS\EID Authentication\Manage Users.lnk"
-  Delete "$SMPROGRAMS\EID Authentication\Trace Consumer.lnk"
-  Delete "$SMPROGRAMS\EID Authentication\Disable LSA Protection (manual).lnk"
-  Delete "$SMPROGRAMS\EID Authentication\Uninstall.lnk"
-  RMDir "$SMPROGRAMS\EID Authentication"
+  Delete "$SMPROGRAMS\OpenAccess EID\Configuration Wizard.lnk"
+  Delete "$SMPROGRAMS\OpenAccess EID\Credential Migration (CLI).lnk"
+  Delete "$SMPROGRAMS\OpenAccess EID\Credential Migration (GUI).lnk"
+  Delete "$SMPROGRAMS\OpenAccess EID\Manage Users.lnk"
+  Delete "$SMPROGRAMS\OpenAccess EID\Trace Consumer.lnk"
+  Delete "$SMPROGRAMS\OpenAccess EID\Disable LSA Protection (manual).lnk"
+  Delete "$SMPROGRAMS\OpenAccess EID\Uninstall.lnk"
+  RMDir "$SMPROGRAMS\OpenAccess EID"
 
   ; Delete desktop shortcut
-  Delete "$DESKTOP\EID Authentication Configuration.lnk"
+  Delete "$DESKTOP\OpenAccess EID Configuration.lnk"
 
   ; Delete System32 files (LSA-locked, require reboot)
   ${DisableX64FSRedirection}
-  Delete /REBOOTOK "$SYSDIR\EIDAuthenticationPackage.dll"
+  Delete /REBOOTOK "$SYSDIR\OpenAccessEIDPackage.dll"
   Delete /REBOOTOK "$SYSDIR\EIDCredentialProvider.dll"
   Delete /REBOOTOK "$SYSDIR\EIDPasswordChangeNotification.dll"
 
@@ -538,11 +588,11 @@ Section "Uninstall"
   ${EnableX64FSRedirection}
 
   ; Remove Group Policy administrative templates
-  Delete "$WINDIR\PolicyDefinitions\EIDAuthentication.admx"
-  Delete "$WINDIR\PolicyDefinitions\en-US\EIDAuthentication.adml"
+  Delete "$WINDIR\PolicyDefinitions\OpenAccessEID.admx"
+  Delete "$WINDIR\PolicyDefinitions\en-US\OpenAccessEID.adml"
 
   ; Delete Program Files installation - DLLs
-  Delete "$INSTDIR\EIDAuthenticationPackage.dll"
+  Delete "$INSTDIR\OpenAccessEIDPackage.dll"
   Delete "$INSTDIR\EIDCredentialProvider.dll"
   Delete "$INSTDIR\EIDPasswordChangeNotification.dll"
 
@@ -556,7 +606,7 @@ Section "Uninstall"
   ; Stop and remove the ETW trace consumer service before deleting its binary,
   ; otherwise the running service holds the file open and leaves a stale service.
   ; Remove the trace-config GPO-apply scheduled task
-  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /F /TN "EID Authentication\Apply Trace Config"'
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /F /TN "OpenAccess EID\Apply Trace Config"'
   nsExec::ExecToLog '"$INSTDIR\EIDTraceConsumer.exe" -stop'
   nsExec::ExecToLog '"$INSTDIR\EIDTraceConsumer.exe" -uninstall'
   Delete "$INSTDIR\EIDTraceConsumer.exe"
@@ -576,7 +626,7 @@ Section "Uninstall"
   SetRegView 64
 
   ; Remove installation path registry
-  DeleteRegKey HKLM "Software\EIDAuthentication"
+  DeleteRegKey HKLM "Software\OpenAccessEID"
 
   ; Remove Credential Provider registry keys
   DeleteRegKey HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{B4866A0A-DB08-4835-A26F-414B46F3244C}"
@@ -611,12 +661,12 @@ Section "Uninstall"
   nsExec::ExecToLog '"$SYSDIR\sc.exe" config ScDeviceEnum start= demand'
 
   ; Remove uninstall information
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID"
 
   SetPluginUnload manual
   SetRebootFlag true
 
-  MessageBox MB_OK "EID Authentication has been uninstalled. Please reboot your computer to complete the removal."
+  MessageBox MB_OK "OpenAccess EID has been uninstalled. Please reboot your computer to complete the removal."
 
 SectionEnd
 
@@ -663,10 +713,13 @@ Function .onInit
   ; non-card-bound (signature-only) enrollments out of logon on upgrade/repair,
   ; because silent (/S) installs never show the Security Options page.
   SetRegView 64
-  ClearErrors
-  ReadRegStr $9 HKLM "Software\EIDAuthentication" "InstallPath"
-  ${If} ${Errors}
-  ${OrIf} $9 == ""
+  StrCpy $MigratedFromLegacy 0
+  ; Current install location, else one made under the former product name.
+  ReadRegStr $9 HKLM "Software\OpenAccessEID" "InstallPath"
+  ${If} $9 == ""
+    ReadRegStr $9 HKLM "Software\EIDAuthentication" "InstallPath"
+  ${EndIf}
+  ${If} $9 == ""
     ; No prior installation - nothing can be re-locked, so be secure by default.
     StrCpy $RequireCardBound 1
   ${Else}
@@ -685,18 +738,72 @@ Function .onInit
     StrCpy $RequireCardBound $0
   ${EndIf}
 
-  ; Check if already installed via registry
+  ; Check for an existing installation - current name first, then the former
+  ; EID Authentication name (v1.3.00 and earlier).
   SetRegView 64
-  ReadRegStr $0 HKLM "Software\EIDAuthentication" "InstallPath"
+  StrCpy $5 "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID"
+  StrCpy $6 "OpenAccess EID"
+  ReadRegStr $0 HKLM "Software\OpenAccessEID" "InstallPath"
+  ${If} $0 == ""
+    ReadRegStr $0 HKLM "Software\EIDAuthentication" "InstallPath"
+    ${If} $0 != ""
+      StrCpy $5 "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication"
+      StrCpy $6 "EID Authentication (the former name of OpenAccess EID)"
+      StrCpy $MigratedFromLegacy 1
+    ${EndIf}
+  ${EndIf}
   StrCmp $0 "" CheckInstallEnd 0
 
   ; Installation found - ask user to uninstall first
-  MessageBox MB_YESNO "EID Authentication is already installed at:$\n$0$\n$\nDo you want to uninstall it first?" IDYES DoUninstall IDNO AbortInstall
+  MessageBox MB_YESNO "$6 is already installed at:$\n$0$\n$\nIt must be uninstalled first. Smart-card enrollments and stored credentials are kept.$\n$\nUninstall it now?" /SD IDYES IDYES DoUninstall IDNO AbortInstall
 
   DoUninstall:
-    ; Read uninstaller path
-    ReadRegStr $1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "UninstallString"
-    ExecWait '"$1"'
+    InitPluginsDir
+
+    ; The uninstaller deletes the whole smart-card policy key, which holds
+    ; RequireCardBoundCredentials, RequireRevocationCheck and the other
+    ; policies an administrator chose. Keep a copy and put it back afterwards
+    ; so an upgrade does not silently reset them.
+    ClearErrors
+    nsExec::ExecToLog '"$SYSDIR\reg.exe" export "HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider" "$PLUGINSDIR\sccp-policy.reg" /y /reg:64'
+    Pop $7
+
+    ; Logging settings live under the install key, which the uninstaller also
+    ; deletes. Migrating from the former name, copy them to the new key (which
+    ; the old uninstaller never touches); otherwise keep a copy to put back.
+    ${If} $MigratedFromLegacy == 1
+      nsExec::ExecToLog '"$SYSDIR\reg.exe" copy "HKLM\SOFTWARE\EIDAuthentication\LogManager" "HKLM\SOFTWARE\OpenAccessEID\LogManager" /s /f /reg:64'
+      Pop $8
+      StrCpy $8 1
+    ${Else}
+      nsExec::ExecToLog '"$SYSDIR\reg.exe" export "HKLM\SOFTWARE\OpenAccessEID\LogManager" "$PLUGINSDIR\logmanager.reg" /y /reg:64'
+      Pop $8
+    ${EndIf}
+
+    ; _?= makes ExecWait genuinely wait. Without it an NSIS uninstaller
+    ; re-launches itself from a temporary copy and returns at once, so it
+    ; would run concurrently with this install - and delete keys the new
+    ; version has just written (credential provider CLSID, policies).
+    ReadRegStr $1 HKLM "$5" "UninstallString"
+    ${If} ${FileExists} "$1"
+      ${If} ${Silent}
+        ExecWait '"$1" /S _?=$0'
+      ${Else}
+        ExecWait '"$1" _?=$0'
+      ${EndIf}
+      ; Run in place, the uninstaller cannot delete itself or its directory.
+      Delete "$1"
+      RMDir "$0"
+    ${EndIf}
+
+    ${If} $7 == 0
+      nsExec::ExecToLog '"$SYSDIR\reg.exe" import "$PLUGINSDIR\sccp-policy.reg" /reg:64'
+      Pop $7
+    ${EndIf}
+    ${If} $8 == 0
+      nsExec::ExecToLog '"$SYSDIR\reg.exe" import "$PLUGINSDIR\logmanager.reg" /reg:64'
+      Pop $8
+    ${EndIf}
     Goto CheckInstallEnd
 
   AbortInstall:

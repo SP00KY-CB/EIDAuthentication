@@ -1,5 +1,5 @@
 /*
-    EID Authentication - fuzz target: hand-rolled JSON parser
+    OpenAccess EID - fuzz target: hand-rolled JSON parser
     Copyright (C) 2026 Contributors
 
     This library is free software; you can redistribute it and/or
