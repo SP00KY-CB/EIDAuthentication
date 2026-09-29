@@ -1,4 +1,4 @@
-# Fuzzing EID Authentication
+# Fuzzing OpenAccess EID
 
 This project fuzzes its own parsers on Windows, with MSVC's libFuzzer and
 AddressSanitizer. Quick commands live in [`../fuzz/README.md`](../fuzz/README.md);
@@ -162,7 +162,7 @@ caller must catch. Two call chains matter, and the second is the serious one:
    guarded and falls back to the default configuration, because refusing to
    start the logger is strictly worse than starting it with defaults.
 
-   On a correctly installed machine `C:\ProgramData\EIDAuthentication\logging.json`
+   On a correctly installed machine `C:\ProgramData\OpenAccessEID\logging.json`
    is created with SYSTEM/Administrators full control and Users read-only, so a
    standard user cannot rewrite it. The parent directory does carry an inherited
    `Users: Write` ACE, so the pre-first-save window (file absent) and disk

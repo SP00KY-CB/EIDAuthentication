@@ -1,4 +1,4 @@
-# EID Authentication for Windows
+# OpenAccess EID for Windows
 
 [![CI](https://github.com/DangerDawgAU/EIDAuthentication/actions/workflows/windows-ci.yaml/badge.svg)](https://github.com/DangerDawgAU/EIDAuthentication/actions/workflows/windows-ci.yaml)
 [![CodeQL](https://github.com/DangerDawgAU/EIDAuthentication/actions/workflows/codeql.yml/badge.svg)](https://github.com/DangerDawgAU/EIDAuthentication/actions/workflows/codeql.yml)
@@ -12,6 +12,8 @@
 
 **Certificate-based smart card logon for local Windows accounts, built for environments where Active Directory cannot be used.**
 
+> Formerly released as **EID Authentication** (v1.3.00 and earlier); see [Upgrading from EID Authentication](#upgrading-from-eid-authentication-v1300-and-earlier).
+>
 > This project is a fork of **EIDAuthenticate Community Edition**, originally written by **Vincent Le Toux** ([My Smart Logon](https://www.mysmartlogon.com)). It is maintained independently and is not affiliated with or endorsed by My Smart Logon. For the commercially supported product, see My Smart Logon's EIDAuthenticate. See [Credits and license](#credits-and-license).
 
 Supports any smart card with a Windows minidriver. The installer bundles minidrivers for Aventra MyEID, YubiKey, and Idemia IDOne PIV cards; the OpenSC minidriver extends coverage to many additional cards.
@@ -20,7 +22,7 @@ Supports any smart card with a Windows minidriver. The installer bundles minidri
 
 ## Concept of Operations
 
-EID Authentication provides certificate-based smart card logon for local Windows accounts. It registers an authentication package with the Windows Local Security Authority (LSA) and a credential provider with the logon UI, replacing password entry with card-and-PIN authentication on hosts that are not domain-joined. Enrollment, certificate validation, and authentication are performed entirely on the local machine; no Active Directory, domain controller, or network connectivity is required. This design targets standalone, isolated, and air-gapped systems where domain infrastructure is unavailable or prohibited by policy.
+OpenAccess EID provides certificate-based smart card logon for local Windows accounts. It registers an authentication package with the Windows Local Security Authority (LSA) and a credential provider with the logon UI, replacing password entry with card-and-PIN authentication on hosts that are not domain-joined. Enrollment, certificate validation, and authentication are performed entirely on the local machine; no Active Directory, domain controller, or network connectivity is required. This design targets standalone, isolated, and air-gapped systems where domain infrastructure is unavailable or prohibited by policy.
 
 **Authentication Flow:**
 1. User inserts smart card at Windows logon screen
@@ -102,7 +104,7 @@ HKLM\SYSTEM\CurrentControlSet\Control\Lsa\limitblankpassworduse = 0
 
 | DLL | Purpose |
 |-----|---------|
-| **EIDAuthenticationPackage.dll** | LSA Authentication Package - core authentication logic running in LSASS |
+| **OpenAccessEIDPackage.dll** | LSA Authentication Package - core authentication logic running in LSASS |
 | **EIDCredentialProvider.dll** | Credential Provider - integrates with the Windows logon screen |
 | **EIDPasswordChangeNotification.dll** | Password Filter - synchronizes Windows password changes with stored credentials |
 
@@ -112,9 +114,28 @@ HKLM\SYSTEM\CurrentControlSet\Control\Lsa\limitblankpassworduse = 0
 
 ---
 
+## Upgrading from EID Authentication (v1.3.00 and earlier)
+
+This project was renamed to **OpenAccess EID** at v2.0.00. Running the new installer on a machine with EID Authentication installed removes the old version (keeping enrollments) and installs OpenAccess EID in its place. **A reboot is required**: Windows reads its LSA authentication-package list only at boot.
+
+**Smart-card enrollments are preserved.** Stored credentials, certificates and the smart-card policies under `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider` are carried over, so users do not re-enrol.
+
+What changes, and what needs administrator action:
+
+| Item | Old | New | Action |
+|---|---|---|---|
+| LSA package | `EIDAuthenticationPackage.dll` | `OpenAccessEIDPackage.dll` | None - the installer swaps the registration. Update any scripts that name the DLL. |
+| Install folder | `C:\Program Files\EID Authentication` | `C:\Program Files\OpenAccess EID` | None. |
+| Logs and `logging.json` | `C:\ProgramData\EIDAuthentication` | `C:\ProgramData\OpenAccessEID` | Re-point any SIEM collector or scheduled task. If the move fails (a file held open), existing logs stay in the old folder and the installer says so. |
+| Logging settings | `HKLM\SOFTWARE\EIDAuthentication\LogManager` | `HKLM\SOFTWARE\OpenAccessEID\LogManager` | None - copied across. |
+| Group Policy template | `EIDAuthentication.admx`, namespace `EIDAuthentication.Policies` | `OpenAccessEID.admx`, namespace `OpenAccessEID.Policies` | **Re-apply logging policies** using the new template, and copy it to any central PolicyDefinitions store. Settings made through the old template are not carried over. |
+| Scheduled task | `EID Authentication\Apply Trace Config` | `OpenAccess EID\Apply Trace Config` | None. |
+
+Component names keep the `EID` prefix (`EIDCredentialProvider.dll`, `EIDMigrate.exe`, and so on), all GUIDs are unchanged, and the stored-credential format is identical.
+
 ## Software Architecture
 
-### Authentication Package (EIDAuthenticationPackage.dll)
+### Authentication Package (OpenAccessEIDPackage.dll)
 
 Implements the Windows LSA Authentication Package interface (`SpLsaModeInitialize`).
 
@@ -219,7 +240,7 @@ Windows Password Filter API implementation:
 ## Registry Integration
 
 ### LSA
-- `HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Authentication Packages` = `EIDAuthenticationPackage`
+- `HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Authentication Packages` = `OpenAccessEIDPackage`
 - `HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Notification Packages` = `EIDPasswordChangeNotification`
 
 ### Credential Provider
@@ -243,7 +264,7 @@ Windows Password Filter API implementation:
 
 **Note:** `0` = Disabled, `1` = Enabled. These policies are **disabled by default** for security. Only enable if specifically required for your environment.
 
-Logging and ETW trace settings are managed under `HKLM\SOFTWARE\Policies\EIDAuthentication\LogManager`
+Logging and ETW trace settings are managed under `HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager`
 via the bundled ADMX template (`Installer\PolicyDefinitions`). Values set there override the local
 configuration.
 
@@ -279,7 +300,7 @@ this policy.
 
 ## Smart Card Compatibility
 
-EID Authentication uses the Windows smart card minidriver model rather than any single vendor stack. Any card with a working Windows minidriver can be used, including PIV-compliant cards; the minidriver mapped to the card by Windows is located and loaded at runtime.
+OpenAccess EID uses the Windows smart card minidriver model rather than any single vendor stack. Any card with a working Windows minidriver can be used, including PIV-compliant cards; the minidriver mapped to the card by Windows is located and loaded at runtime.
 
 **Bundled Minidrivers:**
 
@@ -293,7 +314,7 @@ The installer bundles three minidrivers (SHA-256 verified at build time, staged 
 
 **Wider Compatibility via OpenSC:**
 
-The OpenSC project provides a Windows minidriver (installed by the OpenSC MSI) that covers a broad range of additional cards, including many national eID cards and other PKCS#15-capable tokens. Cards supported by the OpenSC minidriver work with EID Authentication the same way as cards using vendor minidrivers. OpenSC is not bundled; obtain it from https://github.com/OpenSC/OpenSC/releases.
+The OpenSC project provides a Windows minidriver (installed by the OpenSC MSI) that covers a broad range of additional cards, including many national eID cards and other PKCS#15-capable tokens. Cards supported by the OpenSC minidriver work with OpenAccess EID the same way as cards using vendor minidrivers. OpenSC is not bundled; obtain it from https://github.com/OpenSC/OpenSC/releases.
 
 **Other Compatible Cards:**
 - PIVKey cards via PIVKey Minidriver
@@ -392,7 +413,7 @@ Export files use the `.eid` extension with the following security:
 
 ## Code Signing
 
-The beta releases of EID Authentication are **unsigned**. Windows "LSA
+The beta releases of OpenAccess EID are **unsigned**. Windows "LSA
 Protection" (also known as `RunAsPPL` or Protected Process Light) will refuse to
 load unsigned plug-ins into LSASS, which blocks the authentication package
 and password-change notification DLL. To test the unsigned beta, LSA
@@ -411,10 +432,10 @@ probes the current state, backs up the prior values, and toggles
 `RunAsPPL`:
 
 ```
-%ProgramFiles%\EID Authentication\tools\Disable-LsaProtection.ps1
+%ProgramFiles%\OpenAccess EID\tools\Disable-LsaProtection.ps1
 ```
 
-A Start Menu shortcut is also created: **EID Authentication >
+A Start Menu shortcut is also created: **OpenAccess EID >
 Disable LSA Protection (manual)**. The script requires Administrator
 rights and will self-elevate. It must never be run on production
 workstations, domain controllers, or any host holding cached credentials
@@ -443,7 +464,7 @@ Authoritative reference:
 For production deployments, all three LSA-loaded binaries must be
 code-signed:
 
-- `EIDAuthenticationPackage.dll` (LSA Authentication Package)
+- `OpenAccessEIDPackage.dll` (LSA Authentication Package)
 - `EIDPasswordChangeNotification.dll` (Password Change Notification)
 - `EIDCredentialProvider.dll` (Credential Provider; loaded by LogonUI rather than LSASS, signed as a matter of policy)
 
@@ -475,7 +496,7 @@ Protection.
 
 | Component | Description |
 |-----------|-------------|
-| `EIDAuthenticationPackage.dll` | LSA Authentication Package |
+| `OpenAccessEIDPackage.dll` | LSA Authentication Package |
 | `EIDCredentialProvider.dll` | Credential Provider |
 | `EIDPasswordChangeNotification.dll` | Password Filter |
 | `EIDConfigurationWizard.exe` | Enrollment wizard |
@@ -492,7 +513,7 @@ Protection.
 
 ## Credits and license
 
-EID Authentication is derived from **EIDAuthenticate Community Edition** by **Vincent Le Toux**, Copyright (C) 2009 Vincent Le Toux / Copyright (C) 2009-2011 My Smart Logon, originally published at <https://sourceforge.net/projects/eidauthenticate/>. The authentication package, credential provider, card library and configuration wizard in this repository are built on his original work, and his copyright notices are retained in the source files derived from it. Later modifications are copyright their respective contributors (see the git history).
+OpenAccess EID is derived from **EIDAuthenticate Community Edition** by **Vincent Le Toux**, Copyright (C) 2009 Vincent Le Toux / Copyright (C) 2009-2011 My Smart Logon, originally published at <https://sourceforge.net/projects/eidauthenticate/>. The authentication package, credential provider, card library and configuration wizard in this repository are built on his original work, and his copyright notices are retained in the source files derived from it. Later modifications are copyright their respective contributors (see the git history).
 
 This fork is maintained independently. It is not affiliated with, reviewed by or endorsed by Vincent Le Toux or My Smart Logon,. Problems with this fork should be reported here, not to the original author.
 

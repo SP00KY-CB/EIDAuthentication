@@ -1,4 +1,34 @@
-# EIDAuthentication — VM Test Plan
+# OpenAccess EID — VM Test Plan
+
+> ## v2.0.00 prerelease gate
+>
+> The v2.0.00 prerelease combines two changes: the security hardening from
+> `security-fuzzing-hardening` (Part Z below) and the rename from EID
+> Authentication to OpenAccess EID (Part R). Run **both parts** on the
+> prerelease installer before promoting it. The rename swaps the LSA
+> authentication package, which gates every logon on the machine, so a build
+> that compiles proves nothing here.
+>
+> ## Part R — rename and upgrade from EID Authentication v1.3.00
+>
+> | # | Step | Expected | ✓ | Notes |
+> |---|------|----------|---|-------|
+> | R1 | On a VM with **v1.3.00 installed and a card enrolled**, set `RequireCardBoundCredentials` and one other smart-card policy to non-default values and enable CSV logging. Snapshot. Run the v2.0.00 installer interactively. | The prompt names "EID Authentication (the former name of OpenAccess EID)". The old uninstaller runs and **finishes before** the new install continues; its cleanup checkboxes are unchecked; leave them. After install, a warning about Group Policy appears. | ☐ | |
+> | R2 | Before rebooting, check `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider`. | Both policy values from R1 are still present. | ☐ | |
+> | R3 | Reboot, then **log on with the enrolled card**. | Logon succeeds with no re-enrolment. **Rollback trigger.** | ☐ | |
+> | R4 | `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v "Authentication Packages"` and `/v "Security Packages"`. | Both list `OpenAccessEIDPackage` and neither lists `EIDAuthenticationPackage`. **Rollback trigger** if the old name remains. | ☐ | |
+> | R5 | Check `C:\Windows\System32`. | `OpenAccessEIDPackage.dll`, `EIDCredentialProvider.dll` and `EIDPasswordChangeNotification.dll` present; `EIDAuthenticationPackage.dll` absent. | ☐ | |
+> | R6 | Check `C:\ProgramData`. | `OpenAccessEID\` holds the previous `logs\events.csv` and `logging.json`; `EIDAuthentication\` is gone (or, if the installer logged that the move failed, still holds the old logs). New events are written under `OpenAccessEID\logs`. | ☐ | |
+> | R7 | Check `HKLM\SOFTWARE\OpenAccessEID\LogManager`. | Holds the CSV logging settings from R1. `HKLM\SOFTWARE\EIDAuthentication` no longer exists. | ☐ | |
+> | R8 | Task Scheduler. | `OpenAccess EID\Apply Trace Config` exists; `EID Authentication\Apply Trace Config` does not. | ☐ | |
+> | R9 | Start Menu, Apps & Features, `C:\Program Files`. | Only "OpenAccess EID" entries; no "EID Authentication" folder, shortcut or uninstall entry. | ☐ | |
+> | R10 | Copy `OpenAccessEID.admx`/`.adml` into `%WINDIR%\PolicyDefinitions` (the installer does this), open `gpedit.msc`. | An **OpenAccess EID** category shows every policy; setting one writes under `HKLM\SOFTWARE\Policies\OpenAccessEID\LogManager`. `EIDAuthentication.admx` is gone. | ☐ | |
+> | R11 | Restore the R1 snapshot and repeat the upgrade **silently**: `EIDInstallx64.exe /S`. Reboot, log on with the card. | No prompts or dialogs; logon succeeds. | ☐ | |
+> | R12 | Install v2.0.00 over itself (repair/reinstall) and reboot. | Prompt names "OpenAccess EID"; policies and logging settings survive; card logon succeeds. | ☐ | |
+> | R13 | Fresh VM: install v2.0.00, reboot, enrol, log on. | Succeeds; logs under `C:\ProgramData\OpenAccessEID\logs\events.csv`; no `EIDAuthentication` anywhere in the registry (`reg query HKLM /f EIDAuthentication /s`). | ☐ | |
+> | R14 | Uninstall, reboot. | Both LSA lists are clean of `OpenAccessEIDPackage`; the machine still logs on with a password. | ☐ | |
+>
+> **Rollback trigger:** any ❌ on R3, R4, R11 or R14.
 
 > ## Part Z — additional gate for `security-fuzzing-hardening` (PR #54)
 >
@@ -20,12 +50,12 @@
 > | Z9 | With `RequireCardBoundCredentials=1`, attempt to enrol a **signature-only** card. | Enrolment is refused with a clear error. This is the intended trade for Z7. | ☐ | |
 > | Z10 | Full install → uninstall → reinstall cycle. | All succeed. Seventeen helper launches in the installer moved from bare names to `$SYSDIR` absolute paths; a typo would surface here. | ☐ | |
 > | Z11 | Silent install `EIDInstallx64.exe /S`, then silent uninstall. | Both complete without a prompt. | ☐ | |
-> | Z12 | Confirm the scheduled task `EID Authentication\Apply Trace Config` exists after install and runs at boot. | Task present; trace config applied. Its `/TR` payload also changed to an absolute path. | ☐ | |
+> | Z12 | Confirm the scheduled task `OpenAccess EID\Apply Trace Config` exists after install and runs at boot. | Task present; trace config applied. Its `/TR` payload also changed to an absolute path. | ☐ | |
 > | Z13 | `EIDMigrate` export to `.eidm` with a **17–32 character** passphrase, then import it on another VM. | Round-trips. That passphrase length previously overflowed a 32-byte stack buffer in the HMAC key path. | ☐ | |
 > | Z14 | Import an `.eidm` produced by **v1.3.00**. | Imports successfully — the iteration count is now read from the file header rather than assumed. | ☐ | |
 > | Z15 | Run the configuration wizard's **debug report** feature end to end. | Report is produced. The named pipe is now single-instance with `SECURITY_IDENTIFICATION`, and the path it receives is validated. | ☐ | |
-> | Z16 | Corrupt `C:\ProgramData\EIDAuthentication\logging.json` (invalid JSON), then log on. | Logon succeeds, LSASS does not crash, and an ETW `[CONFIG_REJECT]` event is recorded. | ☐ | |
-> | Z17 | Set `logPath` in `logging.json` to a path outside `C:\ProgramData\EIDAuthentication`. | Rejected; the default log path is retained. | ☐ | |
+> | Z16 | Corrupt `C:\ProgramData\OpenAccessEID\logging.json` (invalid JSON), then log on. | Logon succeeds, LSASS does not crash, and an ETW `[CONFIG_REJECT]` event is recorded. | ☐ | |
+> | Z17 | Set `logPath` in `logging.json` to a path outside `C:\ProgramData\OpenAccessEID`. | Rejected; the default log path is retained. | ☐ | |
 >
 > **Rollback trigger:** any ❌ on Z1, Z2, Z5, Z6, Z8 or Z10. Those are the rows
 > where a failure means existing users are locked out or cannot install.
@@ -58,7 +88,7 @@ merge blocker.
 | A3 | Install the smart-card minidriver(s) for your card(s) if not already present (the installer bundles them under the Complete install type). | Card visible in `certutil -scinfo`. | ☐ | |
 | A4 | Copy `EIDInstallx64.exe` to the VM. Verify its SHA-256 against `Installer\SHA256SUMS.txt`. | Hash matches. | ☐ | |
 | A5 | Run the installer elevated → Complete. Reboot. | Installs with no errors; reboots clean. | ☐ | |
-| A6 | Confirm files: `EIDAuthenticationPackage.dll`, `EIDCredentialProvider.dll` registered; `EIDConfigurationWizard.exe`, `EIDMigrate.exe`, `EIDMigrateUI.exe`, `EIDManageUsers.exe`, `EIDTraceConsumer.exe` present. **`EIDLogManager.exe` must be absent** (removed on this branch). | All present except EIDLogManager. | ☐ | |
+| A6 | Confirm files: `OpenAccessEIDPackage.dll`, `EIDCredentialProvider.dll` registered; `EIDConfigurationWizard.exe`, `EIDMigrate.exe`, `EIDMigrateUI.exe`, `EIDManageUsers.exe`, `EIDTraceConsumer.exe` present. **`EIDLogManager.exe` must be absent** (removed on this branch). | All present except EIDLogManager. | ☐ | |
 | A7 | Take snapshot `installed-clean`. | Restore point exists. | ☐ | |
 
 ---
@@ -162,7 +192,7 @@ Policy key: same subkey, DWORD `RequireRevocationCheck` (default 0/off, fail-clo
 
 | # | Step | Expected | ✓ | Notes |
 |---|------|----------|---|-------|
-| D1 | Load the ADMX/ADML (`Installer\PolicyDefinitions`) into the VM's local policy store; confirm the EID Authentication policy nodes appear (incl. ETW trace-session settings). | Policies visible in `gpedit.msc`. | ☐ | |
+| D1 | Load the ADMX/ADML (`Installer\PolicyDefinitions`) into the VM's local policy store; confirm the OpenAccess EID policy nodes appear (incl. ETW trace-session settings). | Policies visible in `gpedit.msc`. | ☐ | |
 | D2 | Set trace/logging via GPO; confirm `EIDTraceConsumer` honors it (no EIDLogManager app needed). | Tracing controlled by policy. | ☐ | |
 | D3 | Confirm no leftover EIDLogManager registration/shortcuts. | None. | ☐ | |
 
