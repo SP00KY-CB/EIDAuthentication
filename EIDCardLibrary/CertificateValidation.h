@@ -41,7 +41,10 @@ struct ChainValidationParams {
 
 void InitChainValidationParams(ChainValidationParams* params);
 
-PCCERT_CONTEXT GetCertificateFromCspInfo(__in PEID_SMARTCARD_CSP_INFO pCspInfo);
+// dwCspDataLength is the length the LSA supplied for the CspData block
+// (Logon.CspDataLength). Do not pass pCspInfo->dwCspInfoLen: that field lives
+// inside the buffer being validated and is attacker-controlled.
+PCCERT_CONTEXT GetCertificateFromCspInfo(__in PEID_SMARTCARD_CSP_INFO pCspInfo, __in ULONG dwCspDataLength);
 BOOL IsTrustedCertificate(__in PCCERT_CONTEXT pCertContext, __in_opt DWORD dwFlag = 0);
 BOOL HasCertificateRightEKU(__in PCCERT_CONTEXT pCertContext);
 LPCTSTR GetTrustErrorText(DWORD Status);

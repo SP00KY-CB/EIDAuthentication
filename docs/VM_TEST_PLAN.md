@@ -1,4 +1,38 @@
-# EIDAuthentication — VM Test Plan (security-uplift)
+# EIDAuthentication — VM Test Plan
+
+> ## Part Z — additional gate for `security-fuzzing-hardening` (PR #54)
+>
+> This branch changes code on the interactive logon path, inside LSASS, in the
+> installer, and in the credential export format. The rows below are **in
+> addition to** everything already in this document, and each one exists because
+> a specific defect was fixed there. Run them on a build from this branch.
+>
+> | # | Step | Expected | ✓ | Notes |
+> |---|------|----------|---|-------|
+> | Z1 | Smart-card logon, correct PIN. | Logon succeeds. **The whole branch is void if this fails** — it touches the CSP-info validator, the submit-buffer bounds check, the minidriver load path and the challenge length rule. | ☐ | |
+> | Z2 | Smart-card logon, **wrong** PIN, then correct PIN. | Wrong PIN is refused with the usual message and the retry succeeds. Exercises the rewritten `__try/__finally` that now wipes the PIN on all eighteen exits. | ☐ | |
+> | Z3 | Enrol a user with a **57–63 character** password, then log on with the card. | Both succeed. Before this branch, enrolment reported success and every later logon failed with `NTE_BAD_LEN` — the stored ciphertext landed exactly on the block boundary. | ☐ | |
+> | Z4 | Enrol a user with a **64 character** password, then log on. | Both succeed. This length previously stored a truncated (effectively empty) password. | ☐ | |
+> | Z5 | Enrol with an ordinary 8–20 character password and log on. | Succeeds — confirms the block-length change did not disturb the common case. | ☐ | |
+> | Z6 | On a machine with an existing enrolment from **v1.3.00**, upgrade to this build and log on. | Succeeds. The stored-blob format is unchanged; only exact-multiple lengths behave differently. | ☐ | |
+> | Z7 | Fresh install on a clean VM, then check `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider\RequireCardBoundCredentials`. | Value is **1**. New installs are card-bound by default now. | ☐ | |
+> | Z8 | Upgrade an existing install that has the policy at 0 (or absent). | Value is **unchanged**. An upgrade must never silently re-lock an existing signature-only enrolment. | ☐ | |
+> | Z9 | With `RequireCardBoundCredentials=1`, attempt to enrol a **signature-only** card. | Enrolment is refused with a clear error. This is the intended trade for Z7. | ☐ | |
+> | Z10 | Full install → uninstall → reinstall cycle. | All succeed. Seventeen helper launches in the installer moved from bare names to `$SYSDIR` absolute paths; a typo would surface here. | ☐ | |
+> | Z11 | Silent install `EIDInstallx64.exe /S`, then silent uninstall. | Both complete without a prompt. | ☐ | |
+> | Z12 | Confirm the scheduled task `EID Authentication\Apply Trace Config` exists after install and runs at boot. | Task present; trace config applied. Its `/TR` payload also changed to an absolute path. | ☐ | |
+> | Z13 | `EIDMigrate` export to `.eidm` with a **17–32 character** passphrase, then import it on another VM. | Round-trips. That passphrase length previously overflowed a 32-byte stack buffer in the HMAC key path. | ☐ | |
+> | Z14 | Import an `.eidm` produced by **v1.3.00**. | Imports successfully — the iteration count is now read from the file header rather than assumed. | ☐ | |
+> | Z15 | Run the configuration wizard's **debug report** feature end to end. | Report is produced. The named pipe is now single-instance with `SECURITY_IDENTIFICATION`, and the path it receives is validated. | ☐ | |
+> | Z16 | Corrupt `C:\ProgramData\EIDAuthentication\logging.json` (invalid JSON), then log on. | Logon succeeds, LSASS does not crash, and an ETW `[CONFIG_REJECT]` event is recorded. | ☐ | |
+> | Z17 | Set `logPath` in `logging.json` to a path outside `C:\ProgramData\EIDAuthentication`. | Rejected; the default log path is retained. | ☐ | |
+>
+> **Rollback trigger:** any ❌ on Z1, Z2, Z5, Z6, Z8 or Z10. Those are the rows
+> where a failure means existing users are locked out or cannot install.
+
+---
+
+## Original plan (security-uplift)
 
 **Purpose:** Verify the `security-uplift` branch on a clean VM before merging to
 `quality-fixes`. This is the explicit gate from `SECURITY_REVIEW.md`: every High/Medium

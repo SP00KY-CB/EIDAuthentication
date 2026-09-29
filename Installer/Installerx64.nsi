@@ -1,4 +1,4 @@
-;--------------------------------
+﻿;--------------------------------
 ;Include Modern UI
 
   !include "MUI2.nsh"
@@ -227,7 +227,7 @@ Section "Core" SecCore
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "EstimatedSize" $InstallSize
 
   ; Register authentication package (from System32)
-  ExecWait 'rundll32.exe "$SYSDIR\EIDAuthenticationPackage.dll",DllRegister'
+  ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",DllRegister'
 
   ; Configure Smart Card services to start automatically on boot. The
   ; default state on Windows is "Manual (Trigger Start)" which only
@@ -237,10 +237,10 @@ Section "Core" SecCore
   ; readers. Forcing start= auto ensures SCardSvr and its device
   ; enumerator are running before the logon UI appears.
   DetailPrint "Configuring Smart Card services for automatic startup..."
-  nsExec::ExecToLog 'sc config SCardSvr start= auto'
-  nsExec::ExecToLog 'sc config ScDeviceEnum start= auto'
-  nsExec::ExecToLog 'net start SCardSvr'
-  nsExec::ExecToLog 'net start ScDeviceEnum'
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" config SCardSvr start= auto'
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" config ScDeviceEnum start= auto'
+  nsExec::ExecToLog '"$SYSDIR\net.exe" start SCardSvr'
+  nsExec::ExecToLog '"$SYSDIR\net.exe" start ScDeviceEnum'
 
   ; Install and start the ETW trace consumer service. Without this the CSV
   ; logging (configured via Group Policy / the LogManager registry key) has no
@@ -255,8 +255,8 @@ Section "Core" SecCore
   ; settings take effect without EIDLogManager. Runs as SYSTEM (needs HKLM autologger write).
   ; $SYSDIR resolves to the real System32 here (x64 FS redirection is disabled above).
   DetailPrint "Applying trace configuration and scheduling the GPO-apply task..."
-  nsExec::ExecToLog 'rundll32.exe "$SYSDIR\EIDAuthenticationPackage.dll",DllApplyTraceConfigW'
-  nsExec::ExecToLog 'schtasks /Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /TN "EID Authentication\Apply Trace Config" /TR "rundll32.exe $SYSDIR\EIDAuthenticationPackage.dll,DllApplyTraceConfigW"'
+  nsExec::ExecToLog '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",DllApplyTraceConfigW'
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /TN "EID Authentication\Apply Trace Config" /TR "$SYSDIR\rundll32.exe $SYSDIR\EIDAuthenticationPackage.dll,DllApplyTraceConfigW"'
 
   SetPluginUnload manual
   SetRebootFlag true
@@ -293,7 +293,7 @@ Section /o "MyEID Minidriver (Aventra)" SecMyEIDMinidriver
   File "drivers\MyEID_Minidriver.zip"
 
   DetailPrint "Extracting MyEID Minidriver..."
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ' \
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command ' \
     'try { Expand-Archive -LiteralPath "$PLUGINSDIR\MyEID\MyEID_Minidriver.zip" -DestinationPath "$PLUGINSDIR\MyEID\x" -Force; exit 0 } ' \
     'catch { Write-Error $_.Exception.Message; exit 1 }' \
     ''
@@ -304,7 +304,7 @@ Section /o "MyEID Minidriver (Aventra)" SecMyEIDMinidriver
   ${EndIf}
 
   DetailPrint "Installing MyEID Minidriver (pnputil)..."
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ' \
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command ' \
     '$inf = Get-ChildItem -Path "$PLUGINSDIR\MyEID\x" -Recurse -Filter *.inf -ErrorAction SilentlyContinue | Select-Object -First 1; ' \
     'if (-not $inf) { Write-Error "No INF found in MyEID archive"; exit 2 }; ' \
     '& pnputil.exe -i -a $inf.FullName | Out-Host; ' \
@@ -328,7 +328,7 @@ Section /o "YubiKey Minidriver (Yubico)" SecYubiKeyMinidriver
   File "drivers\YubiKey-Minidriver-5.0.4.273-x64.msi"
 
   DetailPrint "Installing YubiKey Minidriver (msiexec)..."
-  nsExec::ExecToLog 'msiexec.exe /i "$PLUGINSDIR\YubiKey\YubiKey-Minidriver-5.0.4.273-x64.msi" /qn /norestart'
+  nsExec::ExecToLog '"$SYSDIR\msiexec.exe" /i "$PLUGINSDIR\YubiKey\YubiKey-Minidriver-5.0.4.273-x64.msi" /qn /norestart'
   Pop $0
   ${If} $0 = 0
     DetailPrint "YubiKey Minidriver installed successfully"
@@ -349,7 +349,7 @@ Section /o "IDOne PIV Minidriver (Idemia / Windows Update)" SecWUMinidriver
   CreateDirectory "$PLUGINSDIR\WU\x"
 
   DetailPrint "Extracting CAB contents..."
-  nsExec::ExecToLog 'expand.exe -F:* "$PLUGINSDIR\WU\WindowsUpdate_Minidriver.cab" "$PLUGINSDIR\WU\x"'
+  nsExec::ExecToLog '"$SYSDIR\expand.exe" -F:* "$PLUGINSDIR\WU\WindowsUpdate_Minidriver.cab" "$PLUGINSDIR\WU\x"'
   Pop $0
   ${If} $0 != 0
     DetailPrint "WARNING: CAB extraction failed (code $0) - skipping"
@@ -357,7 +357,7 @@ Section /o "IDOne PIV Minidriver (Idemia / Windows Update)" SecWUMinidriver
   ${EndIf}
 
   DetailPrint "Adding INF driver(s) to the driver store..."
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ' \
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command ' \
     '$infs = Get-ChildItem -Path "$PLUGINSDIR\WU\x" -Recurse -Filter *.inf -ErrorAction SilentlyContinue; ' \
     'if (-not $infs) { Write-Error "No INF found in CAB"; exit 2 }; ' \
     'foreach ($inf in $infs) { Write-Host ("Installing: " + $inf.FullName); & pnputil.exe -i -a $inf.FullName | Out-Host }; ' \
@@ -475,7 +475,7 @@ Section "Uninstall"
   ; Unregister all components first (from System32)
   ${DisableX64FSRedirection}
   DetailPrint "Unregistering components..."
-  ExecWait 'rundll32.exe "$SYSDIR\EIDAuthenticationPackage.dll",DllUnRegister' $0
+  ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",DllUnRegister' $0
   ${If} $0 != 0
     DetailPrint "Warning: DllUnRegister returned error code $0 - continuing with manual cleanup"
   ${EndIf}
@@ -490,7 +490,7 @@ Section "Uninstall"
     ${DisableX64FSRedirection}
     ; rundll32 discards the entry point's HRESULT and exits 0 unless it fails to launch,
     ; so $2 only catches a launch failure - per-certificate results go to the ETW trace.
-    ExecWait 'rundll32.exe "$SYSDIR\EIDAuthenticationPackage.dll",CleanupEIDCertificates' $2
+    ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",CleanupEIDCertificates' $2
     ${If} $2 != 0
       DetailPrint "Warning: could not run certificate cleanup (code $2) - certificates remain"
     ${EndIf}
@@ -504,7 +504,7 @@ Section "Uninstall"
     ; This requires calling into the DLL since NSIS cannot directly manipulate LSA
     DetailPrint "Removing EID credential mappings from LSA..."
     ${DisableX64FSRedirection}
-    ExecWait 'rundll32.exe "$SYSDIR\EIDAuthenticationPackage.dll",CleanupLsaCredentials' $1
+    ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\EIDAuthenticationPackage.dll",CleanupLsaCredentials' $1
     ${If} $1 != 0
       DetailPrint "Note: LSA cleanup returned code $1 (may be expected if not installed)"
     ${EndIf}
@@ -556,7 +556,7 @@ Section "Uninstall"
   ; Stop and remove the ETW trace consumer service before deleting its binary,
   ; otherwise the running service holds the file open and leaves a stale service.
   ; Remove the trace-config GPO-apply scheduled task
-  nsExec::ExecToLog 'schtasks /Delete /F /TN "EID Authentication\Apply Trace Config"'
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /F /TN "EID Authentication\Apply Trace Config"'
   nsExec::ExecToLog '"$INSTDIR\EIDTraceConsumer.exe" -stop'
   nsExec::ExecToLog '"$INSTDIR\EIDTraceConsumer.exe" -uninstall'
   Delete "$INSTDIR\EIDTraceConsumer.exe"
@@ -600,15 +600,15 @@ Section "Uninstall"
 
   ; Reset ScPolicySvc service to demand-start (installer may have set it to auto-start)
   DetailPrint "Resetting Smart Card Removal Policy service..."
-  nsExec::ExecToLog 'sc config ScPolicySvc start= demand'
-  nsExec::ExecToLog 'sc stop ScPolicySvc'
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" config ScPolicySvc start= demand'
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" stop ScPolicySvc'
 
   ; Restore Smart Card services to their Windows default (demand / trigger
   ; start). The installer forced these to auto-start; leave them stopped
   ; and revert to demand so Windows' trigger-start behaviour takes over.
   DetailPrint "Restoring Smart Card services to default startup..."
-  nsExec::ExecToLog 'sc config SCardSvr start= demand'
-  nsExec::ExecToLog 'sc config ScDeviceEnum start= demand'
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" config SCardSvr start= demand'
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" config ScDeviceEnum start= demand'
 
   ; Remove uninstall information
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication"
@@ -651,16 +651,34 @@ Function .onInit
     Abort
   ${EndIf}
 
-  ; Default the security option to OFF (opt-in). Defaulting to ON would silently
-  ; re-lock existing non-card-bound (signature-only) enrollments out of logon on
-  ; upgrade/repair, since silent (/S) installs never show the Security Options page.
-  ; The admin can still turn this on deliberately on that page for decrypt-capable cards.
-  StrCpy $RequireCardBound 0
+  ; Default for the security option.
+  ;
+  ; SECURITY: with this policy OFF, a credential may be sealed via the DPAPI
+  ; path - CryptProtectData with CRYPTPROTECT_LOCAL_MACHINE and NO entropy - so
+  ; the stored Windows password is recoverable by any administrator with no card
+  ; and no PIN. The product's central claim only holds when this is ON.
+  ;
+  ; So: default ON for a genuinely FRESH install, and leave existing deployments
+  ; alone. Defaulting ON unconditionally would silently re-lock existing
+  ; non-card-bound (signature-only) enrollments out of logon on upgrade/repair,
+  ; because silent (/S) installs never show the Security Options page.
+  SetRegView 64
+  ClearErrors
+  ReadRegStr $9 HKLM "Software\EIDAuthentication" "InstallPath"
+  ${If} ${Errors}
+  ${OrIf} $9 == ""
+    ; No prior installation - nothing can be re-locked, so be secure by default.
+    StrCpy $RequireCardBound 1
+  ${Else}
+    ; Upgrade or repair: preserve today's behaviour and let the value already in
+    ; force (read below) decide.
+    StrCpy $RequireCardBound 0
+  ${EndIf}
   StrCpy $SecurityPageShown 0
 
   ; On upgrade/repair, seed the checkbox from the policy value already in force so the
-  ; page reflects reality instead of always rendering unchecked.
-  SetRegView 64
+  ; page reflects reality instead of always rendering unchecked. This also means an
+  ; admin who deliberately set 0 keeps 0.
   ClearErrors
   ReadRegDWORD $0 HKLM "SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider" "RequireCardBoundCredentials"
   ${IfNot} ${Errors}
@@ -678,7 +696,7 @@ Function .onInit
   DoUninstall:
     ; Read uninstaller path
     ReadRegStr $1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "UninstallString"
-    ExecWait '$1'
+    ExecWait '"$1"'
     Goto CheckInstallEnd
 
   AbortInstall:

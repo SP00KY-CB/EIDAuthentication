@@ -69,7 +69,18 @@ static CRYPTO_STATUS ComputeHMACSha256( // NOSONAR - COMPLEXITY-01: refactor def
     // Use stack allocation for fixed-size buffers (no C++ objects)
     BYTE ipadKey[SHA256_BLOCK_SIZE]; // NOSONAR - LSASS-01: C-style buffer required by Win32 API
     BYTE opadKey[SHA256_BLOCK_SIZE]; // NOSONAR - LSASS-01: C-style buffer required by Win32 API
-    BYTE actualKey[SHA256_HASH_SIZE];  // Max key size after hashing // NOSONAR - LSASS-01: C-style buffer required by Win32 API
+    // MUST be SHA256_BLOCK_SIZE, not SHA256_HASH_SIZE. The else-branch below
+    // copies cbKey bytes in for any cbKey <= SHA256_BLOCK_SIZE (64), so a
+    // 32-byte buffer overflowed by up to 32 bytes - and the XOR loop then read
+    // past it too, because cbActualKey keeps the oversized value.
+    //
+    // The trigger is an ordinary passphrase: the key here IS the passphrase
+    // (PBKDF2HMACSHA256 passes cchPassphrase * sizeof(WCHAR)), so 17 to 32
+    // characters lands squarely in the overflow window - and
+    // ValidatePassphraseStrength *requires* at least 16. Only the fact that the
+    // overflowing bytes are the user's own passphrase, plus /GS, kept this from
+    // being worse.
+    BYTE actualKey[SHA256_BLOCK_SIZE]; // NOSONAR - LSASS-01: C-style buffer required by Win32 API
     DWORD cbActualKey = cbKey;
 
     // Initialize ipad and opad
@@ -159,8 +170,13 @@ static CRYPTO_STATUS ComputeHMACSha256( // NOSONAR - COMPLEXITY-01: refactor def
     result = CRYPTO_STATUS::CRYPTO_SUCCESS;
 
 cleanup:
-    if (pbHashObject) free(pbHashObject); // NOSONAR - memory allocated with malloc for BCrypt API compatibility
+    // ORDER MATTERS. pbHashObject is the backing store BCryptCreateHash was
+    // given for hHash, so BCryptDestroyHash writes into it. Freeing the buffer
+    // first made every successful call a use-after-free - and this runs once
+    // per PBKDF2 iteration, i.e. 1.2 million times per file operation. Found by
+    // an AddressSanitizer probe over the real derivation path.
     if (hHash) BCryptDestroyHash(hHash);
+    if (pbHashObject) free(pbHashObject); // NOSONAR - memory allocated with malloc for BCrypt API compatibility
     if (hAlgorithm) BCryptCloseAlgorithmProvider(hAlgorithm, 0);
 
     return result;
@@ -340,10 +356,23 @@ CRYPTO_STATUS DeriveKeyFromPassphraseWithSalt(
     _In_ PCWSTR pwszPassphrase,
     _In_ SIZE_T cchPassphrase,
     _In_reads_(PBKDF2_SALT_SIZE) const BYTE* pbSalt,
-    _Out_ DERIVED_KEY* pDerivedKey)
+    _Out_ DERIVED_KEY* pDerivedKey,
+    _In_ DWORD dwIterations)
 {
     if (!pwszPassphrase || cchPassphrase == 0 || !pbSalt || !pDerivedKey)
     {
+        return CRYPTO_STATUS::CRYPTO_ERROR_INVALID_PARAMETER;
+    }
+
+    // The caller passes the iteration count recorded in the file header so that
+    // PBKDF2_ITERATIONS can be raised later without orphaning existing exports.
+    // Clamp it: the header is attacker-supplied, and honouring a value of 1
+    // would turn algorithm agility into a downgrade attack. The ceiling keeps a
+    // hostile file from pinning the CPU for hours.
+    if (dwIterations < PBKDF2_MIN_ITERATIONS || dwIterations > PBKDF2_MAX_ITERATIONS)
+    {
+        EIDM_TRACE_ERROR(L"Rejecting file: PBKDF2 iteration count %u outside [%u, %u]",
+            dwIterations, PBKDF2_MIN_ITERATIONS, PBKDF2_MAX_ITERATIONS);
         return CRYPTO_STATUS::CRYPTO_ERROR_INVALID_PARAMETER;
     }
 
@@ -357,13 +386,13 @@ CRYPTO_STATUS DeriveKeyFromPassphraseWithSalt(
     DWORD cbPassword = static_cast<DWORD>(cchPassphrase * sizeof(WCHAR)); // NOSONAR (EXPLICIT-TYPE-01) - Explicit type preferred for clarity
 
     EIDM_TRACE_VERBOSE(L"Deriving keys with PBKDF2-HMAC-SHA256 using provided salt (password: %u bytes, iterations: %u)",
-        cbPassword, PBKDF2_ITERATIONS);
+        cbPassword, dwIterations);
 
     // Derive encryption key
     cryptoStatus = PBKDF2HMACSHA256(
         pbPassword, cbPassword,
         pDerivedKey->rgbSalt, PBKDF2_SALT_SIZE,
-        PBKDF2_ITERATIONS,
+        dwIterations,
         PBKDF2_KEY_SIZE,
         pDerivedKey->rgbKey);
 
@@ -383,7 +412,7 @@ CRYPTO_STATUS DeriveKeyFromPassphraseWithSalt(
     cryptoStatus = PBKDF2HMACSHA256(
         pbPassword, cbPassword,
         rgbAuthSalt, PBKDF2_SALT_SIZE,
-        PBKDF2_ITERATIONS,
+        dwIterations,
         PBKDF2_KEY_SIZE,
         pDerivedKey->rgbAuthKey);
 
@@ -678,8 +707,10 @@ BOOL ComputeHMAC(
     }
     __finally
     {
-        if (pbHashObject) free(pbHashObject); // NOSONAR - memory allocated with malloc for BCrypt API compatibility
+        // Destroy the hash BEFORE freeing the object buffer it was created
+        // over - same use-after-free as in ComputeHMACSha256 above.
         if (hHash) BCryptDestroyHash(hHash);
+        if (pbHashObject) free(pbHashObject); // NOSONAR - memory allocated with malloc for BCrypt API compatibility
         if (hAlgorithm) BCryptCloseAlgorithmProvider(hAlgorithm, 0);
     }
 

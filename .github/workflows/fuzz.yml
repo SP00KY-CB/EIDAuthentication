@@ -1,0 +1,88 @@
+name: Fuzzing
+
+# Windows-native libFuzzer + AddressSanitizer over the parsers that handle
+# attacker-influenced input. See docs/FUZZING.md for what each target covers.
+#
+# NOTE ON OpenSSF SCORECARD: this workflow earns NO Scorecard credit and is not
+# meant to. The Fuzzing check passes only via OSS-Fuzz, ClusterFuzzLite,
+# OneFuzz, Go-native or Haskell property-based fuzzing. OSS-Fuzz and
+# ClusterFuzzLite build inside Linux/clang Docker images and cannot compile this
+# Win32/MSVC codebase; OneFuzz was archived by Microsoft on 2023-11-01. The
+# Scorecard Fuzzing score stays at 0 by design - do not "fix" it by bolting on a
+# Linux shim that fuzzes code we do not ship.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly deep run, Mondays 04:10 UTC (offset from Scorecard's 03:25).
+    - cron: '10 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Seconds per fuzz target'
+        required: false
+        default: '300'
+
+permissions: {}
+
+jobs:
+  fuzz:
+    name: Regression + fuzz
+    # windows-2022 is the only runner label still carrying VS 2022 with the
+    # v143 toolset. windows-latest/windows-2025 serve a VS 18 image whose
+    # sanitizer and Spectre libraries are v145-only. Same pin as the other
+    # C++-building jobs.
+    runs-on: windows-2022
+    # Budget: 4 fuzz targets x SECONDS_PER_TARGET, plus ~3 min for checkout,
+    # seeding and building. The scheduled run is the binding case at
+    # 4 x 600s = 40 min, so 75 leaves real headroom. Keep this consistent with
+    # SECONDS_PER_TARGET below - an earlier version paired 4 x 1800s (120 min)
+    # with a 60-minute timeout, so every weekly run would have been cancelled
+    # part-way AND lost its crash artifacts (see the upload step's condition).
+    timeout-minutes: 75
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+
+      - name: Seed corpora
+        shell: pwsh
+        run: .\fuzz\Seed-Corpus.ps1
+
+      - name: Build fuzz targets
+        shell: pwsh
+        run: .\fuzz\Build-Fuzzers.ps1
+
+      # Fast and deterministic: replays the proof-of-concept inputs for the four
+      # defects fixed on this branch. This is the gate that must never go red.
+      - name: PoC regression replay
+        shell: pwsh
+        run: .\fuzz\Run-Fuzzers.ps1 -Regress
+
+      - name: Fuzz
+        shell: pwsh
+        env:
+          # 60s per target on PRs keeps the job under ~6 minutes; the weekly
+          # schedule goes deeper. 600 x 4 = 40 min, inside timeout-minutes: 75.
+          # Raising this REQUIRES raising timeout-minutes to match.
+          SECONDS_PER_TARGET: ${{ github.event_name == 'schedule' && '600' || github.event.inputs.seconds || '60' }}
+        run: .\fuzz\Run-Fuzzers.ps1 -Seconds ([int]$env:SECONDS_PER_TARGET)
+
+      # Reproducers are the whole point of a finding - without them a red run is
+      # unactionable.
+      #
+      # always(), not failure(): a timeout-minutes breach CANCELS the job, and a
+      # cancelled job does not satisfy failure(). That would silently discard the
+      # artifacts of the long scheduled run - precisely the run most likely to
+      # have found something.
+      - name: Upload crash reproducers
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: |
+            fuzz/crashes/
+          if-no-files-found: ignore
+          retention-days: 30

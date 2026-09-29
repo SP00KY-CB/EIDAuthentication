@@ -32,11 +32,16 @@ CRYPTO_STATUS DeriveKeyFromPassphrase(
 
 // Derive encryption and authentication keys from passphrase with provided salt
 // Used for decryption where salt comes from file header
+// dwIterations is the count recorded in the file being imported, so that
+// PBKDF2_ITERATIONS can be raised without orphaning existing exports. It is
+// clamped to [PBKDF2_MIN_ITERATIONS, PBKDF2_MAX_ITERATIONS] because the header
+// is attacker-supplied.
 CRYPTO_STATUS DeriveKeyFromPassphraseWithSalt(
     _In_ PCWSTR pwszPassphrase,
     _In_ SIZE_T cchPassphrase,
     _In_reads_(PBKDF2_SALT_SIZE) const BYTE* pbSalt,
-    _Out_ DERIVED_KEY* pDerivedKey);
+    _Out_ DERIVED_KEY* pDerivedKey,
+    _In_ DWORD dwIterations);
 
 // Validate passphrase strength
 BOOL ValidatePassphraseStrength(_In_ PCWSTR pwszPassphrase);

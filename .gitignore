@@ -17,6 +17,26 @@
 # Mono auto generated files
 mono_crash.*
 
+# Fuzzing artifacts.
+# Binaries already fall under the x64/ rule below (they build to x64\Fuzz\).
+# Reproducers and per-run logs are local evidence, not source: a genuine
+# finding should be triaged and turned into a case in fuzz/targets/regress_main.cpp
+# (and a seed in fuzz/corpus/) rather than committed as a raw crash file.
+fuzz/crashes/
+# libFuzzer grows the corpus in place, writing coverage-increasing inputs named
+# after their SHA-1. Those are a local cache - regenerable, and thousands of
+# files after a long run. Only the curated seeds from Seed-Corpus.ps1 (which
+# have readable names) are tracked.
+fuzz/corpus/**
+!fuzz/corpus/**/
+!fuzz/corpus/**/*.bin
+# libFuzzer writes crash-<sha1>/leak-<sha1>/timeout-<sha1> to the CURRENT
+# directory when -artifact_prefix is missing; catch strays at the repo root.
+/crash-*
+/leak-*
+/timeout-*
+/oom-*
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/

@@ -752,7 +752,16 @@ extern "C"
 				ContextSizes->cbMaxSignature = 0;
 				ContextSizes->cbSecurityTrailer = 0;
 				ContextSizes->cbBlockSize = 0;
-				ContextSizes->cbMaxToken = 300;
+				// 300 was never enough and is now actively wrong. A challenge
+				// token is sizeof(EID_CHALLENGE_MESSAGE) + a 256-byte challenge
+				// + 2 bytes per username character, i.e. over 300 for any name
+				// of five characters or more; a response carries an RSA
+				// signature, 512 bytes on an RSA-4096 card. Those writes used
+				// to overflow the caller's token silently and are now refused
+				// outright, so a peer that sizes its buffer from this value -
+				// the documented idiom - would fail every handshake. Match the
+				// package's own advertised cbMaxToken instead.
+				ContextSizes->cbMaxToken = 5000;
 				break;
 			case SECPKG_ATTR_NAMES:
 				if (!ContextHandle)

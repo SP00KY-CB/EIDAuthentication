@@ -23,8 +23,22 @@
  */
 
 #include "CSVConfig.h"
+#include "Tracing.h"
 #include "../EIDMigrate/JsonHelper.h"
 #include "../EIDMigrate/Utils.h"
+
+// DO NOT call EIDSecurityAudit (or anything else that reaches
+// EIDCardLibraryLogStructured) from this file's config-loading path.
+//
+// EIDSecurityAuditEx -> EIDCardLibraryLogStructured -> InitOnceExecuteOnce on
+// g_CSVInitOnce. That is the SAME one-time-init this code is running inside:
+// EIDCardLibraryLogStructured -> InitOnce -> EIDCSVInitOnceCallback ->
+// EID_CSV_Initialize -> EID_CSV_LoadConfig -> EID_CSV_LoadConfigFromFile.
+// Re-entering InitOnceExecuteOnce from its own callback on the same thread
+// deadlocks - inside LSASS, on the logon path.
+//
+// EIDCardLibraryTrace writes straight to ETW and is a leaf, so it is safe here
+// and is what the rejection paths below use.
 #include <fstream>
 #include <filesystem>
 
@@ -61,6 +75,53 @@ std::string EID_CSV_ConfigToJson(const EID_CSV_CONFIG& config)
 }
 
 // ================================================================
+// Helper: is a configured log path acceptable?
+// ================================================================
+// The log path drives an elevated operation: CSVLogger passes its directory to
+// EnsureLogDirSecured, which rewrites that directory's DACL as SYSTEM with
+// PROTECTED_DACL_SECURITY_INFORMATION - stripping inherited and TrustedInstaller
+// ACEs - and SetNamedSecurityInfoW follows junctions. So an arbitrary path here
+// is an arbitrary-directory ACL rewrite, not just an odd place to write a log.
+//
+// Constrain it to the product's own directory. Anything else - UNC, device
+// namespace, drive-relative, or traversal - is refused and the default kept.
+static bool EID_CSV_IsAcceptableLogPath(const std::wstring& wsPath)
+{
+    if (wsPath.empty() || wsPath.length() >= MAX_PATH)
+    {
+        return false;
+    }
+    // UNC (\\server\share) and the device namespaces (\\?\ , \\.\).
+    if (wsPath.compare(0, 2, L"\\\\") == 0)
+    {
+        return false;
+    }
+    // Traversal in any form, and alternate data streams.
+    if (wsPath.find(L"..") != std::wstring::npos || wsPath.find(L'/') != std::wstring::npos)
+    {
+        return false;
+    }
+    // Must be a fully qualified path on a local drive: X:\...
+    if (wsPath.length() < 4 || wsPath[1] != L':' || wsPath[2] != L'\\')
+    {
+        return false;
+    }
+    // A colon anywhere after the drive letter would be an ADS.
+    if (wsPath.find(L':', 2) != std::wstring::npos)
+    {
+        return false;
+    }
+    // Must sit under the product's own config directory.
+    const std::wstring wsRoot = std::wstring(EID_CSV_CONFIG_DIR) + L"\\";
+    if (wsPath.length() <= wsRoot.length() ||
+        _wcsnicmp(wsPath.c_str(), wsRoot.c_str(), wsRoot.length()) != 0)
+    {
+        return false;
+    }
+    return true;
+}
+
+// ================================================================
 // Helper: Convert JSON string to EID_CSV_CONFIG
 // ================================================================
 HRESULT EID_CSV_JsonToConfig(const std::string& json, EID_CSV_CONFIG& config)
@@ -80,24 +141,49 @@ HRESULT EID_CSV_JsonToConfig(const std::string& json, EID_CSV_CONFIG& config)
     if (root.has("enabled"))
         config.fEnabled = root["enabled"]->asBool() ? TRUE : FALSE;
 
-    // Read log path
+    // Read log path.
+    //
+    // This is the least trusted of the four config sources - it is a file, and
+    // on a machine where the config directory has not yet been secured a
+    // standard user can create it. The path is not merely stored: CSVLogger
+    // hands its directory to EnsureLogDirSecured, which calls
+    // SetNamedSecurityInfoW with a PROTECTED DACL **as SYSTEM**, follows
+    // junctions, and severs inheritance. A length check is not enough.
     if (root.has("logPath"))
     {
         std::string utf8Path = root["logPath"]->asString();
         std::wstring wpath = Utf8ToWide(utf8Path);
-        if (wpath.length() < MAX_PATH)
+        if (!EID_CSV_IsAcceptableLogPath(wpath))
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,
+                L"[CONFIG_REJECT] logging.json specified an unacceptable logPath; default retained");
+        }
+        else
         {
             wcscpy_s(config.szLogPath, wpath.c_str());
         }
     }
 
-    // Read max file size
+    // Read max file size.
+    // asNumber() returns long long and is truncated to DWORD with no sign
+    // check, so a negative value becomes an enormous positive one. The
+    // registry, GPO and trace-consumer loaders all clamp these; this loader -
+    // the only one parsing untrusted bytes - did not, which let
+    // {"fileCount": -1} drive ~4.29 billion GetFileAttributesW calls inside
+    // CSVLogger::RotateLogFile while holding s_csLogger, in LSASS, on the logon
+    // path. Same bounds as the other three loaders.
     if (root.has("maxFileSizeMB"))
-        config.dwMaxFileSizeMB = static_cast<DWORD>(root["maxFileSizeMB"]->asNumber());
+    {
+        const long long llValue = root["maxFileSizeMB"]->asNumber();
+        config.dwMaxFileSizeMB = (llValue < 1) ? 1 : (llValue > 100 ? 100 : static_cast<DWORD>(llValue));
+    }
 
     // Read file count
     if (root.has("fileCount"))
-        config.dwFileCount = static_cast<DWORD>(root["fileCount"]->asNumber());
+    {
+        const long long llValue = root["fileCount"]->asNumber();
+        config.dwFileCount = (llValue < 1) ? 1 : (llValue > 100 ? 100 : static_cast<DWORD>(llValue));
+    }
 
     // Read columns bitmask
     if (root.has("columns"))
@@ -151,8 +237,40 @@ HRESULT EID_CSV_LoadConfigFromFile(PCWSTR pwszPath, EID_CSV_CONFIG& config)
     }
     file.close();
 
-    // Parse JSON
-    return EID_CSV_JsonToConfig(content, config);
+    // Parse JSON.
+    //
+    // This MUST NOT be allowed to throw. JsonParser reports malformed input by
+    // throwing std::runtime_error, and this function is reached inside the LSA
+    // package: EIDCardLibraryLogStructured -> InitOnceExecuteOnce ->
+    // EIDCSVInitOnceCallback -> EID_CSV_Initialize -> EID_CSV_LoadConfig ->
+    // here. An exception escaping an InitOnce callback in LSASS is a process
+    // crash, and the read above was already guarded while the parse - the part
+    // that actually parses untrusted bytes - was not.
+    //
+    // Falling back to the default configuration is the right failure mode:
+    // logging configuration is not security policy, and refusing to start the
+    // logger is strictly worse than starting it with defaults.
+    try
+    {
+        return EID_CSV_JsonToConfig(content, config);
+    }
+    catch (const std::exception&)  // NOSONAR - EXCEPTION-01: must not escape into LSASS
+    {
+        // Leave a breadcrumb. Swapping a throw for a quiet fallback is right -
+        // an exception escaping an InitOnce callback in LSASS is a crash - but
+        // silently degrading the logging configuration on malformed input, with
+        // no record of it, makes a corrupt file indistinguishable from a tampered
+        // one. ETW only: see the re-entrancy note at the top of this file.
+        EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,
+            L"[CONFIG_REJECT] logging.json failed to parse; falling back to registry/default configuration");
+        return E_FAIL;
+    }
+    catch (...)  // NOSONAR - EXCEPTION-01: must not escape into LSASS
+    {
+        EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,
+            L"[CONFIG_REJECT] logging.json raised a non-standard exception; falling back to registry/default configuration");
+        return E_FAIL;
+    }
 }
 
 // ================================================================

@@ -24,6 +24,7 @@
 #include "GPO.h"
 #include "CertificateValidation.h"
 #include "CertificateUtilities.h"
+#include "InputValidation.h"
 
 #pragma comment(lib,"Crypt32")
 
@@ -220,29 +221,42 @@ void InitChainValidationParams(ChainValidationParams* params)
 // Marked noexcept for LSASS compatibility
 // Note: EIDImpersonate/EIDRevertToSelf must be called by the wrapper for proper cleanup
 [[nodiscard]] EID::Result<PCCERT_CONTEXT> GetCertificateFromCspInfoInternal(
-    __in PEID_SMARTCARD_CSP_INFO pCspInfo) noexcept
+    __in PEID_SMARTCARD_CSP_INFO pCspInfo, __in ULONG dwCspDataLength) noexcept
 {
 	// for TS Smart Card redirection
 	PCCERT_CONTEXT pCertContext = nullptr;
 	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO, L"GetCertificateFromCspInfoInternal");
 	HCRYPTPROV hProv = NULL;  // Windows handle type - keep as NULL
 
-	// SECURITY FIX #143: Validate CSP info offsets before use (CWE-125/CWE-20)
-	// Client-supplied offsets must be within structure bounds to prevent out-of-bounds read
-	DWORD dwHeaderSize = FIELD_OFFSET(EID_SMARTCARD_CSP_INFO, bBuffer);
-	if (pCspInfo->dwCspInfoLen < dwHeaderSize ||  // NOSONAR - SCOPE-01: declaration kept at function scope for clarity
-	    pCspInfo->nContainerNameOffset >= (pCspInfo->dwCspInfoLen - dwHeaderSize) ||
-	    pCspInfo->nCSPNameOffset >= (pCspInfo->dwCspInfoLen - dwHeaderSize))
+	// Offset validation is centralised in EIDValidateCspInfo. The previous
+	// inline check here bounded the offsets against dwCspInfoLen - a field
+	// inside the same attacker-supplied buffer, so it could be inflated at
+	// will - and it compared BYTE counts against offsets that are then used to
+	// index bBuffer, which is TCHAR[]. That mismatch allowed a read of up to
+	// twice the declared bound. EIDValidateCspInfo does the arithmetic in WCHAR
+	// units and requires each string to terminate inside the buffer.
+	if (!EIDValidateCspInfo(pCspInfo, dwCspDataLength))
 	{
-		EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR, L"GetCertificateFromCspInfoInternal: Invalid CSP info offset - dwCspInfoLen=%u, nContainerNameOffset=%u, nCSPNameOffset=%u",
-			pCspInfo->dwCspInfoLen, pCspInfo->nContainerNameOffset, pCspInfo->nCSPNameOffset);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR, L"GetCertificateFromCspInfoInternal: CSP info layout rejected (CspDataLength=%u)",
+			dwCspDataLength);
+		return EID::make_unexpected(E_INVALIDARG);
+	}
+	LPCTSTR szContainerName = EIDCspInfoStringAt(pCspInfo, dwCspDataLength, pCspInfo->nContainerNameOffset);
+	LPCTSTR szProviderName = EIDCspInfoStringAt(pCspInfo, dwCspDataLength, pCspInfo->nCSPNameOffset);
+	if (!szProviderName || !szContainerName)
+	{
+		// Both are required. A null container name is NOT equivalent to "field
+		// absent" here: CryptAcquireContext reads nullptr as "use the provider's
+		// DEFAULT container", which is precisely the PIV fallback performed
+		// below only after the named lookup fails. Letting an absent field
+		// silently select that path would turn a malformed request into a
+		// different, weaker lookup. Every writer in this repo emits both names.
+		EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR, L"GetCertificateFromCspInfoInternal: CSP name or container name absent");
 		return EID::make_unexpected(E_INVALIDARG);
 	}
 
 	BYTE Data[4096];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 	DWORD DataSize = ARRAYSIZE(Data);
-	LPTSTR szContainerName = pCspInfo->bBuffer + pCspInfo->nContainerNameOffset;
-	LPTSTR szProviderName = pCspInfo->bBuffer + pCspInfo->nCSPNameOffset;
 	HCRYPTKEY phUserKey = NULL;  // Windows handle type - keep as NULL
 	BOOL fResult;
 
@@ -320,10 +334,10 @@ void InitChainValidationParams(ChainValidationParams* params)
 }
 
 // Exported wrapper maintaining PCCERT_CONTEXT return type with SetLastError
-PCCERT_CONTEXT GetCertificateFromCspInfo(__in PEID_SMARTCARD_CSP_INFO pCspInfo)
+PCCERT_CONTEXT GetCertificateFromCspInfo(__in PEID_SMARTCARD_CSP_INFO pCspInfo, __in ULONG dwCspDataLength)
 {
 	EIDImpersonate();
-	auto result = GetCertificateFromCspInfoInternal(pCspInfo);
+	auto result = GetCertificateFromCspInfoInternal(pCspInfo, dwCspDataLength);
 	EIDRevertToSelf();
 
 	if (result.has_value())

@@ -50,6 +50,7 @@
 #include "EIDCardLibrary.h"
 #include "Tracing.h"
 #include "StoredCredentialManagement.h"
+#include "InputValidation.h"
 
 #pragma comment(lib, "Secur32.lib")
 #pragma comment(lib, "Netapi32.lib")
@@ -558,6 +559,16 @@ NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAu
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"pUnlockLogon NULL");
 		return STATUS_INVALID_PARAMETER;
 	}
+	// Every check below reads Logon.UserName / Logon.CspData / CspDataLength out
+	// of this buffer, so the fixed struct must be established as present FIRST.
+	// A submit buffer shorter than the header was read out of bounds by the
+	// very code meant to bound it.
+	if (AuthenticationInformationLength < sizeof(EID_INTERACTIVE_UNLOCK_LOGON))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"AuthenticationInformationLength %u < sizeof(EID_INTERACTIVE_UNLOCK_LOGON)",
+			AuthenticationInformationLength);
+		return STATUS_INVALID_PARAMETER_3;
+	}
 	if ((pUnlockLogon->Logon.UserName.Buffer) != nullptr)
 	{
 		ULONG_PTR offset = (ULONG_PTR)(pUnlockLogon->Logon.UserName.Buffer);  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity
@@ -620,71 +631,118 @@ NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAu
 		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap CSPData from %d",pUnlockLogon->Logon.CspData);
 		pUnlockLogon->Logon.CspData = PUCHAR( (PBYTE)pUnlockLogon + (ULONG_PTR) pUnlockLogon->Logon.CspData);
 		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap CSPData to %d",pUnlockLogon->Logon.CspData);
+
+		// The check above bounds the CspData BLOCK against the submit buffer.
+		// It says nothing about the block's interior: EID_SMARTCARD_CSP_INFO
+		// carries its own dwCspInfoLen plus four name offsets, and the
+		// downstream consumers bound those offsets against dwCspInfoLen - a
+		// field that lives inside this same attacker-supplied block. Validate
+		// the interior here, at the one place every logon passes through, so
+		// no consumer has to trust an attacker-supplied length again.
+		if (!EIDValidateCspInfo(reinterpret_cast<PEID_SMARTCARD_CSP_INFO>(pUnlockLogon->Logon.CspData),
+				pUnlockLogon->Logon.CspDataLength))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CspInfo layout rejected (CspDataLength=%u)",
+				pUnlockLogon->Logon.CspDataLength);
+			return STATUS_INVALID_PARAMETER_3;
+		}
 	}
 	EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Leave");
 	return STATUS_SUCCESS;
 }
 
-VOID EIDDebugPrintEIDUnlockLogonStruct(UCHAR dwLevel, PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon) {
+// Diagnostic dump of an attacker-supplied logon buffer.
+//
+// This runs UNCONDITIONALLY on every logon attempt (see the call in
+// EIDAuthenticationPackage.cpp), before the callers' own field validation, so
+// it must be total: every length is clamped to the local buffer and every
+// CspData read goes through EIDCspInfoStringAt. Two concrete defects lived
+// here - `Buffer[Length/2] = 0` wrote up to index 32767 into a 1000-WCHAR
+// stack array, and the four `bBuffer[nXxxNameOffset]` reads used raw 32-bit
+// attacker offsets as indices and printed the result with %s.
+//
+// dwCspDataLength must come from the caller. Do not substitute
+// pCspInfo->dwCspInfoLen: that field is exactly what cannot be trusted.
+VOID EIDDebugPrintEIDUnlockLogonStruct(UCHAR dwLevel, PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, ULONG dwCspDataLength) {
 	WCHAR Buffer[1000];  // NOSONAR - LSASS-01: C-style buffer required by Win32 API
+	constexpr size_t cchBuffer = ARRAYSIZE(Buffer);
+
+	if (!pUnlockLogon)
+	{
+		EIDCardLibraryTrace(dwLevel,L"pUnlockLogon NULL");
+		return;
+	}
+
+	// Copy at most cchBuffer-1 characters and terminate inside the array,
+	// whatever Length claims. UNICODE_STRING.Length is a USHORT in bytes, so
+	// Length/2 reaches 32767 - far past this buffer.
+	auto TraceCountedString = [&](PCWSTR pszLabel, PCWSTR pszValue, USHORT usLengthInBytes)
+	{
+		if (!pszValue)
+		{
+			EIDCardLibraryTrace(dwLevel,L"No %s",pszLabel);
+			return;
+		}
+		size_t cchCopy = usLengthInBytes / sizeof(WCHAR);
+		if (cchCopy > cchBuffer - 1)
+		{
+			cchCopy = cchBuffer - 1;
+		}
+		wcsncpy_s(Buffer, cchBuffer, pszValue, cchCopy);
+		Buffer[cchCopy] = L'\0';
+		EIDCardLibraryTrace(dwLevel,L"%s '%s'",pszLabel,Buffer);
+	};
+
 	EIDCardLibraryTrace(dwLevel,L"LogonId %d %d",pUnlockLogon->LogonId.LowPart,pUnlockLogon->LogonId.HighPart);
 	EIDCardLibraryTrace(dwLevel,L"Username %d",pUnlockLogon->Logon.UserName.Length);
-	if ((pUnlockLogon->Logon.UserName.Buffer) != nullptr)
-	{
-		wcsncpy_s(Buffer,1000,pUnlockLogon->Logon.UserName.Buffer,pUnlockLogon->Logon.UserName.Length/2);
-		Buffer[pUnlockLogon->Logon.UserName.Length/2]=0;
-		EIDCardLibraryTrace(dwLevel,L"Username '%s'",Buffer);
-	}
-	else
-	{
-		EIDCardLibraryTrace(dwLevel,L"No Username");
-	}
+	TraceCountedString(L"Username", pUnlockLogon->Logon.UserName.Buffer, pUnlockLogon->Logon.UserName.Length);
 	EIDCardLibraryTrace(dwLevel,L"LogonDomainName %d",pUnlockLogon->Logon.LogonDomainName.Length);
-	if (pUnlockLogon->Logon.LogonDomainName.Buffer != nullptr)
-	{
-		wcsncpy_s(Buffer,1000,pUnlockLogon->Logon.LogonDomainName.Buffer,pUnlockLogon->Logon.LogonDomainName.Length/2);
-		Buffer[pUnlockLogon->Logon.LogonDomainName.Length/2]=0;
-		EIDCardLibraryTrace(dwLevel,L"LogonDomainName '%s'",Buffer);
-	}
-	else
-	{
-		EIDCardLibraryTrace(dwLevel,L"No DomainName");
-	}
+	TraceCountedString(L"LogonDomainName", pUnlockLogon->Logon.LogonDomainName.Buffer, pUnlockLogon->Logon.LogonDomainName.Length);
+
+	// The PIN is copied but deliberately never traced.
 	EIDCardLibraryTrace(dwLevel,L"Pin %d",pUnlockLogon->Logon.Pin.Length);
-	if (pUnlockLogon->Logon.Pin.Buffer != nullptr)
-	{
-		wcsncpy_s(Buffer,1000,pUnlockLogon->Logon.Pin.Buffer,pUnlockLogon->Logon.Pin.Length/2);
-		Buffer[pUnlockLogon->Logon.Pin.Length/2]=0;
-	}
-	else
+	if (pUnlockLogon->Logon.Pin.Buffer == nullptr)
 	{
 		EIDCardLibraryTrace(dwLevel,L"No Pin");
 	}
+
 	EIDCardLibraryTrace(dwLevel,L"Flags %d",pUnlockLogon->Logon.Flags);
 	EIDCardLibraryTrace(dwLevel,L"MessageType %d",pUnlockLogon->Logon.MessageType);
 	EIDCardLibraryTrace(dwLevel,L"CspDataLength %d",pUnlockLogon->Logon.CspDataLength);
 	if (pUnlockLogon->Logon.CspData)
 	{
 		PEID_SMARTCARD_CSP_INFO pCspInfo = (PEID_SMARTCARD_CSP_INFO) pUnlockLogon->Logon.CspData;  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity
+		if (!EIDValidateCspInfo(pCspInfo, dwCspDataLength))
+		{
+			EIDCardLibraryTrace(dwLevel,L"CspData present but layout invalid - not dumping");
+			return;
+		}
 		EIDCardLibraryTrace(dwLevel,L"MessageType %d",pCspInfo->MessageType);
 		EIDCardLibraryTrace(dwLevel,L"KeySpec %d",pCspInfo->KeySpec);
-		if (pCspInfo->nCardNameOffset)
+
+		const struct { PCWSTR pszLabel; ULONG nOffset; } rgNames[] = {
+			{ L"CardName",      pCspInfo->nCardNameOffset      },
+			{ L"ReaderName",    pCspInfo->nReaderNameOffset    },
+			{ L"ContainerName", pCspInfo->nContainerNameOffset },
+			{ L"CSPName",       pCspInfo->nCSPNameOffset       },
+		};
+		for (size_t i = 0; i < ARRAYSIZE(rgNames); i++)
 		{
-			EIDCardLibraryTrace(dwLevel,L"CardName '%s'",&pCspInfo->bBuffer[pCspInfo->nCardNameOffset]);
+			if (rgNames[i].nOffset == 0)
+			{
+				continue;
+			}
+			PCWSTR pszName = EIDCspInfoStringAt(pCspInfo, dwCspDataLength, rgNames[i].nOffset);
+			if (pszName)
+			{
+				EIDCardLibraryTrace(dwLevel,L"%s '%s'",rgNames[i].pszLabel,pszName);
+			}
+			else
+			{
+				EIDCardLibraryTrace(dwLevel,L"%s (invalid offset %u)",rgNames[i].pszLabel,rgNames[i].nOffset);
+			}
 		}
-		if (pCspInfo->nReaderNameOffset)
-		{
-			EIDCardLibraryTrace(dwLevel,L"ReaderName '%s'",&pCspInfo->bBuffer[pCspInfo->nReaderNameOffset]);
-		}
-		if (pCspInfo->nContainerNameOffset)
-		{
-			EIDCardLibraryTrace(dwLevel,L"ContainerName '%s'",&pCspInfo->bBuffer[pCspInfo->nContainerNameOffset]);
-		}
-		if (pCspInfo->nCSPNameOffset)
-		{
-			EIDCardLibraryTrace(dwLevel,L"CSPName '%s'",&pCspInfo->bBuffer[pCspInfo->nCSPNameOffset]);
-		}
-	}	
+	}
 }
 
 PTSTR GetUsernameFromRid(__in DWORD dwRid)

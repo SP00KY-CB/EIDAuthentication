@@ -98,6 +98,44 @@ BOOL TestLogon(HWND hMainWnd)
 
 HANDLE hInternalLogWriteHandle = nullptr;  // NOSONAR - RUNTIME-01: File handle, opened at runtime
 
+// Is a caller-supplied report path safe to open CREATE_ALWAYS at high
+// integrity? CREATE_ALWAYS truncates, so an unconstrained path here is an
+// arbitrary-file-destruction primitive - including the product's own audit log,
+// which the supplying process otherwise cannot touch.
+BOOL IsAcceptableReportPath(PCTSTR szPath)
+{
+	if (!szPath || szPath[0] == TEXT('\0'))
+	{
+		return FALSE;
+	}
+	const size_t cchPath = _tcslen(szPath);
+	if (cchPath >= MAX_PATH)
+	{
+		return FALSE;
+	}
+	// UNC and the device namespaces (\\?\ , \\.\).
+	if (szPath[0] == TEXT('\\') && szPath[1] == TEXT('\\'))
+	{
+		return FALSE;
+	}
+	// Traversal, and forward slashes which bypass naive prefix checks.
+	if (_tcsstr(szPath, TEXT("..")) != nullptr || _tcschr(szPath, TEXT('/')) != nullptr)
+	{
+		return FALSE;
+	}
+	// Must be fully qualified on a local drive: X:\...
+	if (cchPath < 4 || szPath[1] != TEXT(':') || szPath[2] != TEXT('\\'))
+	{
+		return FALSE;
+	}
+	// A colon after the drive letter would name an alternate data stream.
+	if (_tcschr(szPath + 2, TEXT(':')) != nullptr)
+	{
+		return FALSE;
+	}
+	return TRUE;
+}
+
 HANDLE StartReport(PTSTR szLogFile) // NOSONAR - API-01: PTSTR parameter dictated by report/logging API signature
 {
 	DWORD dwError = 0;
@@ -105,13 +143,22 @@ HANDLE StartReport(PTSTR szLogFile) // NOSONAR - API-01: PTSTR parameter dictate
 	HANDLE hOutput = INVALID_HANDLE_VALUE;  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
 	__try
 	{
+		if (!IsAcceptableReportPath(szLogFile))
+		{
+			dwError = ERROR_INVALID_NAME;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"StartReport: path rejected");
+			__leave;
+		}
 		//  Creates the new file to write to for the upper-case version.
-		hOutput = CreateFile(szLogFile, // file name 
-							   GENERIC_WRITE,        // open for write 
+		// FILE_FLAG_OPEN_REPARSE_POINT so a symlink or junction planted at the
+		// target cannot redirect this elevated CREATE_ALWAYS elsewhere. The CSV
+		// logger already does this; this path did not.
+		hOutput = CreateFile(szLogFile, // file name
+							   GENERIC_WRITE,        // open for write
 							   0,                    // do not share
 							   nullptr,                 // default security
 							   CREATE_ALWAYS,        // overwrite existing
-							   FILE_ATTRIBUTE_NORMAL,// normal file
+							   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
 							   nullptr);                // no template
 		if (hOutput == INVALID_HANDLE_VALUE) 
 		{ 
@@ -137,6 +184,12 @@ HANDLE StartReport(PTSTR szLogFile) // NOSONAR - API-01: PTSTR parameter dictate
 			if (hOutput != INVALID_HANDLE_VALUE)
 				CloseHandle(hOutput);
 			hOutput = INVALID_HANDLE_VALUE;
+			// Clear the global too. It was assigned above before StartLogging
+			// could fail, so the failure path used to close the handle and leave
+			// hInternalLogWriteHandle pointing at it - and CreateReport then
+			// calls ExportOneTraceFile(hInternalLogWriteHandle, ...) regardless,
+			// writing to a closed and possibly recycled handle.
+			hInternalLogWriteHandle = INVALID_HANDLE_VALUE;
 		}
 	}
 	SetLastError(dwError);
@@ -236,7 +289,43 @@ BOOL CreateDebugReport(PTSTR szLogFile)
 			szNamedPipeName[_tcslen(szNamedPipeName)] = alphanum[dis(gen)];
 		}
 
-		hNamedPipe = CreateNamedPipe(szNamedPipeName,PIPE_ACCESS_DUPLEX,0,PIPE_UNLIMITED_INSTANCES,0,0,0,nullptr);
+		// SECURITY: this pipe is created by a MEDIUM-integrity process and then
+		// connected to by an ELEVATED one, so it is a low-to-high channel.
+		//
+		// The original call passed PIPE_UNLIMITED_INSTANCES and a null security
+		// descriptor. A null SD applies the token's DEFAULT DACL, which grants
+		// the creating user GENERIC_ALL - and that includes
+		// FILE_CREATE_PIPE_INSTANCE. So any other process running as the same
+		// user could add an instance of this pipe, consume the legitimate one as
+		// a client, and let the elevated process fall into its own documented
+		// ERROR_PIPE_BUSY / WaitNamedPipe retry (see CreateReport below) and
+		// connect to the ATTACKER'S instance instead. The random name suffix is
+		// no defence: the named-pipe directory is world-listable.
+		//
+		// FILE_FLAG_FIRST_PIPE_INSTANCE + nMaxInstances = 1 closes it: the
+		// attacker's CreateNamedPipe fails if we got there first, and ours fails
+		// loudly if they did, rather than silently sharing the name.
+		SECURITY_ATTRIBUTES sa = {};
+		SECURITY_DESCRIPTOR sd = {};
+		if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION))
+		{
+			dwError = GetLastError();
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"InitializeSecurityDescriptor 0x%08X", dwError);
+			__leave;
+		}
+		sa.nLength = sizeof(sa);
+		sa.lpSecurityDescriptor = &sd;
+		sa.bInheritHandle = FALSE;
+		// A null DACL would grant everyone access; we want the token default,
+		// which is user + SYSTEM only, so leave the SD's DACL absent-but-not-null
+		// by not calling SetSecurityDescriptorDacl with a NULL ACL. Passing the
+		// SD unmodified gives the same default DACL as before, and the instance
+		// limit is what actually stops the squat.
+		hNamedPipe = CreateNamedPipe(szNamedPipeName,
+			PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+			1,                       // nMaxInstances: exactly one
+			0,0,0,&sa);
 		if (hNamedPipe == INVALID_HANDLE_VALUE)
 		{
 			dwError = GetLastError();
@@ -313,7 +402,14 @@ VOID CreateReport(PTSTR szNamedPipeName) // NOSONAR - API-01: PTSTR parameter di
 	DWORD dwRead;
 	__try
 	{
-		hPipe = CreateFile( szNamedPipeName,GENERIC_READ |GENERIC_WRITE,0,nullptr,OPEN_EXISTING, 0,nullptr);
+		// SECURITY_IDENTIFICATION, not the default SecurityImpersonation. This
+		// elevated process is the CLIENT of a pipe created by a medium-integrity
+		// one, so without this the pipe's server could call
+		// ImpersonateNamedPipeClient and act with this process's token.
+		// Identification level lets the server query our identity but never
+		// impersonate it.
+		hPipe = CreateFile( szNamedPipeName,GENERIC_READ |GENERIC_WRITE,0,nullptr,OPEN_EXISTING,
+			SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,nullptr);
 		if (hPipe == INVALID_HANDLE_VALUE)
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"INVALID_HANDLE_VALUE 1");
@@ -327,19 +423,47 @@ VOID CreateReport(PTSTR szNamedPipeName) // NOSONAR - API-01: PTSTR parameter di
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"WaitNamedPipe 0x%08X",GetLastError());
 				__leave;
 			}
-			hPipe = CreateFile( szNamedPipeName,GENERIC_READ |GENERIC_WRITE,0,nullptr,OPEN_EXISTING, 0,nullptr);
+			// SECURITY_IDENTIFICATION, not the default SecurityImpersonation. This
+		// elevated process is the CLIENT of a pipe created by a medium-integrity
+		// one, so without this the pipe's server could call
+		// ImpersonateNamedPipeClient and act with this process's token.
+		// Identification level lets the server query our identity but never
+		// impersonate it.
+		hPipe = CreateFile( szNamedPipeName,GENERIC_READ |GENERIC_WRITE,0,nullptr,OPEN_EXISTING,
+			SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,nullptr);
 		}
 		if (hPipe == INVALID_HANDLE_VALUE)
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"INVALID_HANDLE_VALUE 2 0X%08X",GetLastError());
 			__leave;
 		}
-		if (!ReadFile(hPipe,szFile,ARRAYSIZE(szFile) * sizeof(TCHAR), &dwRead,nullptr))
+		// Leave room for a terminator and never trust the peer to send one.
+		// The original read allowed a full 512 bytes into TCHAR[256] and then
+		// passed the buffer to CreateFile with no NUL anywhere, so CreateFile
+		// read off the end of this elevated process's stack.
+		ZeroMemory(szFile, sizeof(szFile));
+		if (!ReadFile(hPipe,szFile,(ARRAYSIZE(szFile) - 1) * sizeof(TCHAR), &dwRead,nullptr))
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ReadFile 0X%08X",GetLastError());
 			__leave;
 		}
-		
+		if (dwRead == 0 || (dwRead % sizeof(TCHAR)) != 0)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Report path: bad length %u",dwRead);
+			__leave;
+		}
+		szFile[dwRead / sizeof(TCHAR)] = TEXT('\0');
+
+		// The peer that supplied this path is NOT trusted - it is the
+		// medium-integrity process that launched us, and this path is about to be
+		// opened CREATE_ALWAYS at high integrity, which truncates whatever it
+		// names. Refuse anything that is not a plain local path.
+		if (!IsAcceptableReportPath(szFile))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Report path rejected");
+			__leave;
+		}
+
 		hReport = StartReport(szFile);
 		
 		// fait for <Enter> to quit

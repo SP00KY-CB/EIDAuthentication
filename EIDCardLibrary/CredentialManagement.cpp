@@ -15,6 +15,7 @@
 #include "../EIDCardLibrary/Tracing.h"
 #include "../EIDCardLibrary/StoredCredentialManagement.h"
 #include "../EIDCardLibrary/CertificateUtilities.h"
+#include "../EIDCardLibrary/InputValidation.h"
 #include "CredentialManagement.h"
 
 #pragma comment(lib,"Winscard")
@@ -72,6 +73,14 @@ CCredential::CCredential(PLUID LogonIdToUse, PCERT_CREDENTIAL_INFO pCertInfo,PWS
 	}
 	_LogonId = *LogonIdToUse;
 	Use = CredentialUseFlags;
+	// Zero unconditionally. SpAcquireCredentialsHandle explicitly supports
+	// AuthorizationData == NULL, and this array was previously left
+	// indeterminate on that path - then copied straight into the negotiate
+	// token that BuildNegociateMessage hands back to the caller. That gave any
+	// local process 32 fresh bytes of LSASS heap per credential handle: a
+	// useful layout oracle for weaponising anything else. A zeroed hash simply
+	// matches no stored credential, which is the intended outcome anyway.
+	memset(_rgbHashOfCert, 0, sizeof(_rgbHashOfCert));
 	// certinfo
 	if (pCertInfo)
 	{
@@ -187,6 +196,8 @@ CSecurityContext::CSecurityContext(CCredential* pCredential)
 	dwRid = 0;  // NOSONAR - INIT-01: member initialized in body for clarity/ordering
 	pCertContext = nullptr;  // NOSONAR - INIT-01: member initialized in body for clarity/ordering
 	szUserName = nullptr;  // NOSONAR - INIT-01: member initialized in body for clarity/ordering
+	_Role = EID_CONTEXT_ROLE::EIDCRUnbound;
+	_fChallengeIsOurs = FALSE;
 	if (pCredential && pCredential->_pCertInfo)
 	{
 		CRYPT_DATA_BLOB blob;
@@ -242,9 +253,35 @@ CSecurityContext* CSecurityContext::GetContextFromHandle(ULONG_PTR context)
 	return result;
 }
 
+// A context belongs to exactly one side of the handshake. The first dispatcher
+// to touch it claims the role; any later attempt to drive it from the other
+// side is refused.
+//
+// Without this, the two dispatchers share one global context list and one
+// _State, so an attacker could: AcceptSecurityContext with a negotiate message
+// carrying a victim's certificate hash (binding dwRid and generating a server
+// challenge), then call InitializeSecurityContext on the SAME handle so
+// ReceiveChallengeMessage overwrites that server-generated challenge with
+// attacker-chosen bytes - and the verifier would later check a signature over a
+// value the attacker picked.
+BOOL CSecurityContext::ClaimRole(EID_CONTEXT_ROLE role)
+{
+	if (_Role == EID_CONTEXT_ROLE::EIDCRUnbound)
+	{
+		_Role = role;
+		return TRUE;
+	}
+	return _Role == role;
+}
+
 NTSTATUS CSecurityContext::InitializeSecurityContextInput(PSecBufferDesc Buffer)
 {
 	NTSTATUS Status = STATUS_INVALID_SIGNATURE;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
+	if (!ClaimRole(EID_CONTEXT_ROLE::EIDCRInitiate))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Init   Input  wrong role for this context");
+		return SEC_E_INVALID_HANDLE;
+	}
 	switch (_State)  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
 	{
 		case EID_MESSAGE_STATE::EIDMSNegociate:
@@ -260,6 +297,11 @@ NTSTATUS CSecurityContext::InitializeSecurityContextInput(PSecBufferDesc Buffer)
 NTSTATUS CSecurityContext::InitializeSecurityContextOutput(PSecBufferDesc Buffer)
 {
 	NTSTATUS Status = STATUS_INVALID_SIGNATURE;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
+	if (!ClaimRole(EID_CONTEXT_ROLE::EIDCRInitiate))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Init   Output wrong role for this context");
+		return SEC_E_INVALID_HANDLE;
+	}
 	switch (_State)
 	{
 		case EID_MESSAGE_STATE::EIDMSNone:
@@ -279,6 +321,11 @@ NTSTATUS CSecurityContext::InitializeSecurityContextOutput(PSecBufferDesc Buffer
 NTSTATUS CSecurityContext::AcceptSecurityContextInput(PSecBufferDesc Buffer)
 {
 	NTSTATUS Status = STATUS_INVALID_SIGNATURE;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
+	if (!ClaimRole(EID_CONTEXT_ROLE::EIDCRAccept))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Accept Input  wrong role for this context");
+		return SEC_E_INVALID_HANDLE;
+	}
 	switch (_State)
 	{
 		case EID_MESSAGE_STATE::EIDMSNone:
@@ -298,6 +345,11 @@ NTSTATUS CSecurityContext::AcceptSecurityContextInput(PSecBufferDesc Buffer)
 NTSTATUS CSecurityContext::AcceptSecurityContextOutput(PSecBufferDesc Buffer)
 {
 	NTSTATUS Status = STATUS_INVALID_SIGNATURE;  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity
+	if (!ClaimRole(EID_CONTEXT_ROLE::EIDCRAccept))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Accept Output wrong role for this context");
+		return SEC_E_INVALID_HANDLE;
+	}
 	switch (_State)
 	{
 		case EID_MESSAGE_STATE::EIDMSNegociate:
@@ -315,8 +367,34 @@ NTSTATUS CSecurityContext::AcceptSecurityContextOutput(PSecBufferDesc Buffer)
 	return Status;
 }
 
+// A SecBufferDesc arrives from whatever local process called into SSPI. LSASS
+// marshals it, but nothing guarantees cBuffers is non-zero or that pBuffers is
+// a valid pointer - a caller can submit {cBuffers = 0, pBuffers = NULL}. Every
+// entry point below indexes pBuffers[0], so each must establish the descriptor
+// first or take an access violation inside LSASS. The SSP dispatch functions
+// are wrapped in __finally only, with no __except, so that AV propagates into
+// lsasrv and terminates the process.
+//
+// This helper exists because the guard was first added to only the two
+// Receive* functions under review, on the mistaken belief that
+// ReceiveNegociateMessage already had it - it checks cbBuffer, which requires
+// dereferencing pBuffers[0] to do. That function is the only entry point
+// reachable with no established context, i.e. the easiest one to reach.
+static bool TokenBufferIsPresent(PSecBufferDesc Buffer)
+{
+	return Buffer != nullptr
+		&& Buffer->pBuffers != nullptr
+		&& Buffer->cBuffers != 0
+		&& Buffer->pBuffers[0].pvBuffer != nullptr;
+}
+
 NTSTATUS CSecurityContext::BuildNegociateMessage(PSecBufferDesc Buffer)
 {
+	if (!TokenBufferIsPresent(Buffer))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: empty output descriptor");
+		return SEC_E_INVALID_TOKEN;
+	}
 	Buffer->pBuffers[0].BufferType = SECBUFFER_TOKEN;
 	if (Buffer->pBuffers[0].cbBuffer < 300)
 	{
@@ -338,6 +416,11 @@ NTSTATUS CSecurityContext::BuildNegociateMessage(PSecBufferDesc Buffer)
 
 NTSTATUS CSecurityContext::ReceiveNegociateMessage(PSecBufferDesc Buffer)
 {
+	if (!TokenBufferIsPresent(Buffer))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: empty buffer descriptor");
+		return SEC_E_INVALID_TOKEN;
+	}
 	if (Buffer->pBuffers[0].cbBuffer < sizeof(EID_NEGOCIATE_MESSAGE))
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INSUFFICIENT_MEMORY");
@@ -371,6 +454,12 @@ NTSTATUS CSecurityContext::BuildChallengeMessage(PSecBufferDesc Buffer)
 	NTSTATUS Status = STATUS_SUCCESS;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
 	__try
 	{
+		if (!TokenBufferIsPresent(Buffer))
+		{
+			Status = SEC_E_INVALID_TOKEN;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: empty output descriptor");
+			__leave;
+		}
 		Buffer->pBuffers[0].BufferType = SECBUFFER_TOKEN;
 		if (Buffer->pBuffers[0].cbBuffer < 300)
 		{
@@ -406,6 +495,10 @@ NTSTATUS CSecurityContext::BuildChallengeMessage(PSecBufferDesc Buffer)
 				szUserName = (PWSTR) EIDAlloc(dwLen*sizeof(WCHAR));
 				if (!szUserName)
 				{
+					// Must set Status: it is initialised to STATUS_SUCCESS and is
+					// now the return value, so an unset failure path would report
+					// success with szUserName still null.
+					Status = SEC_E_INSUFFICIENT_MEMORY;
 					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No memory");
 					__leave;
 				}
@@ -425,23 +518,66 @@ NTSTATUS CSecurityContext::BuildChallengeMessage(PSecBufferDesc Buffer)
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetSignatureChallenge 0x%08x",GetLastError());
 			__leave;
 		}
+		// The `cbBuffer < 300` test above is a floor, not a bound: what actually
+		// gets written is the header plus the challenge plus the username, and
+		// nothing checked that against the caller's buffer. Compute the real
+		// requirement and refuse rather than overflow the token.
+		const DWORD cbChallengeNeeded = static_cast<DWORD>(sizeof(EID_CHALLENGE_MESSAGE)) + dwChallengeSize;
+		const DWORD cbUserName = static_cast<DWORD>(wcslen(szUserName)) * static_cast<DWORD>(sizeof(WCHAR));
+		if (dwChallengeSize > MAXDWORD - sizeof(EID_CHALLENGE_MESSAGE) ||
+			cbUserName > MAXDWORD - cbChallengeNeeded ||
+			cbChallengeNeeded + cbUserName > Buffer->pBuffers[0].cbBuffer)
+		{
+			Status = SEC_E_INSUFFICIENT_MEMORY;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Challenge token needs %u bytes, buffer has %u",
+				cbChallengeNeeded + cbUserName, Buffer->pBuffers[0].cbBuffer);
+			__leave;
+		}
 		message->ChallengeLen = dwChallengeSize;
 		message->ChallengeOffset = sizeof(EID_CHALLENGE_MESSAGE);
 		memcpy((PBYTE)message + message->ChallengeOffset, pbChallenge, dwChallengeSize);
-		message->UsernameLen = (DWORD)wcslen(szUserName) * sizeof(WCHAR);
+		message->UsernameLen = cbUserName;
 		message->UsernameOffset = message->ChallengeOffset + message->ChallengeLen;
 		memcpy((PBYTE)message + message->UsernameOffset,szUserName,message->UsernameLen);
+		Buffer->pBuffers[0].cbBuffer = cbChallengeNeeded + cbUserName;
 		_State = EID_MESSAGE_STATE::EIDMSChallenge;
+		// This nonce came from GetSignatureChallenge on this context, so it is
+		// safe to verify a signature against it later.
+		_fChallengeIsOurs = TRUE;
+		Status = SEC_I_CONTINUE_NEEDED;
 	}
 	__finally
 	{
 		// SEH cleanup - no action needed
 	}
-	return SEC_I_CONTINUE_NEEDED;
+	// Return Status, not a hardcoded success. Every __leave above sets a failure
+	// code and this function used to discard all of them, so an out-of-memory or
+	// undersized-buffer path reported SEC_I_CONTINUE_NEEDED. That was survivable
+	// only because _State is not advanced on those paths, so the next call falls
+	// through to STATUS_INVALID_SIGNATURE - i.e. correctness depended on a
+	// coincidence two functions away. An error path that returns success is one
+	// refactor away from being an authentication bypass.
+	return Status;
 }
 
 NTSTATUS CSecurityContext::ReceiveChallengeMessage(PSecBufferDesc Buffer)
 {
+	// The token comes from whoever called InitializeSecurityContext, i.e. any
+	// local process, and is marshalled into LSASS before we see it. Nothing
+	// below may be read until the descriptor and the declared offset/length
+	// pairs have been checked - the sibling ReceiveNegociateMessage has always
+	// done this; its absence here was an oversight, not a design choice.
+	if (!TokenBufferIsPresent(Buffer))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: empty buffer descriptor");
+		return SEC_E_INVALID_TOKEN;
+	}
+	if (!EIDValidateChallengeMessage(Buffer->pBuffers[0].pvBuffer, Buffer->pBuffers[0].cbBuffer))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: challenge layout rejected (cbBuffer=%u)",
+			Buffer->pBuffers[0].cbBuffer);
+		return SEC_E_INVALID_TOKEN;
+	}
 	PEID_CHALLENGE_MESSAGE message = (PEID_CHALLENGE_MESSAGE) Buffer->pBuffers[0].pvBuffer;  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity
 	if (message->MessageType != static_cast<DWORD>(EID_MESSAGE_TYPE::EIDMTChallenge))  // NOSONAR - ENUM-01: enum kept for Win32/ABI compatibility
 	{
@@ -455,18 +591,41 @@ NTSTATUS CSecurityContext::ReceiveChallengeMessage(PSecBufferDesc Buffer)
 		return STATUS_INVALID_SIGNATURE;
 	}
 
+	// EIDValidateChallengeMessage guarantees UsernameLen + sizeof(WCHAR) cannot
+	// wrap and that both regions lie inside the token.
 	szUserName = (PWSTR) EIDAlloc(message->UsernameLen + sizeof(WCHAR));
+	if (!szUserName)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No memory for szUserName");
+		return SEC_E_INSUFFICIENT_MEMORY;
+	}
 	memcpy(szUserName, (PBYTE) message + message->UsernameOffset, message->UsernameLen);
 	memset((PBYTE) szUserName + message->UsernameLen,0,sizeof(WCHAR));
 	pbChallenge = (PBYTE) EIDAlloc(message->ChallengeLen);
+	if (!pbChallenge)
+	{
+		EIDFree(szUserName);
+		szUserName = nullptr;
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No memory for pbChallenge");
+		return SEC_E_INSUFFICIENT_MEMORY;
+	}
 	memcpy(pbChallenge, (PBYTE)message + message->ChallengeOffset, message->ChallengeLen);
 	dwChallengeSize = message->ChallengeLen;
+	// This challenge arrived over the wire. We are the CLIENT here and will sign
+	// it, which is fine - but it must never be handed to
+	// VerifySignatureChallengeResponse, so mark it as not ours.
+	_fChallengeIsOurs = FALSE;
 	_State = EID_MESSAGE_STATE::EIDMSChallenge;
 	return STATUS_SUCCESS;
 }
 
 NTSTATUS CSecurityContext::BuildResponseMessage(PSecBufferDesc Buffer)
 {
+	if (!TokenBufferIsPresent(Buffer))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: empty output descriptor");
+		return SEC_E_INVALID_TOKEN;
+	}
 	Buffer->pBuffers[0].BufferType = SECBUFFER_TOKEN;
 	if (Buffer->pBuffers[0].cbBuffer < 300)
 	{
@@ -485,15 +644,40 @@ NTSTATUS CSecurityContext::BuildResponseMessage(PSecBufferDesc Buffer)
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_LOGON_DENIED");
 		return SEC_E_LOGON_DENIED;
 	}
+	// Same floor-vs-bound problem as BuildChallengeMessage: an RSA-4096 card
+	// signature is 512 bytes, so header + response is 536 - well past the 300
+	// this function used to treat as sufficient.
+	if (dwResponseSize > MAXDWORD - sizeof(EID_RESPONSE_MESSAGE) ||
+		sizeof(EID_RESPONSE_MESSAGE) + dwResponseSize > Buffer->pBuffers[0].cbBuffer)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Response token needs %u bytes, buffer has %u",
+			static_cast<DWORD>(sizeof(EID_RESPONSE_MESSAGE)) + dwResponseSize, Buffer->pBuffers[0].cbBuffer);
+		return SEC_E_INSUFFICIENT_MEMORY;
+	}
 	message->ResponseLen = dwResponseSize;
 	message->ResponseOffset = sizeof(EID_RESPONSE_MESSAGE);
 	memcpy((PBYTE)message + message->ResponseOffset, pbResponse, dwResponseSize);
+	Buffer->pBuffers[0].cbBuffer = static_cast<DWORD>(sizeof(EID_RESPONSE_MESSAGE)) + dwResponseSize;
 	_State = EID_MESSAGE_STATE::EIDMSComplete;
 	return STATUS_SUCCESS;
 }
 
 NTSTATUS CSecurityContext::ReceiveResponseMessage(PSecBufferDesc Buffer)
 {
+	// Server side of the same problem: this token arrives from whoever called
+	// AcceptSecurityContext against the package registered under
+	// HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Security Packages.
+	if (!TokenBufferIsPresent(Buffer))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: empty buffer descriptor");
+		return SEC_E_INVALID_TOKEN;
+	}
+	if (!EIDValidateResponseMessage(Buffer->pBuffers[0].pvBuffer, Buffer->pBuffers[0].cbBuffer))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: response layout rejected (cbBuffer=%u)",
+			Buffer->pBuffers[0].cbBuffer);
+		return SEC_E_INVALID_TOKEN;
+	}
 	PEID_RESPONSE_MESSAGE message = (PEID_RESPONSE_MESSAGE) Buffer->pBuffers[0].pvBuffer;  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity
 	if (message->MessageType != static_cast<DWORD>(EID_MESSAGE_TYPE::EIDMTResponse))  // NOSONAR - ENUM-01: enum kept for Win32/ABI compatibility
 	{
@@ -508,6 +692,11 @@ NTSTATUS CSecurityContext::ReceiveResponseMessage(PSecBufferDesc Buffer)
 	}
 
 	pbResponse = (PBYTE) EIDAlloc(message->ResponseLen);
+	if (!pbResponse)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No memory for pbResponse");
+		return SEC_E_INSUFFICIENT_MEMORY;
+	}
 	dwResponseSize = message->ResponseLen;
 	memcpy(pbResponse, (PBYTE)message + message->ResponseOffset, dwResponseSize);
 	_State = EID_MESSAGE_STATE::EIDMSComplete;
@@ -518,6 +707,15 @@ NTSTATUS CSecurityContext::BuildCompleteMessage(PSecBufferDesc Buffer)  // NOSON
 {
 	// v�rification du challenge
 	UNREFERENCED_PARAMETER(Buffer);
+	// Only ever verify a signature over a nonce THIS context generated. If the
+	// challenge came from the peer, an attacker chose it, and verifying against
+	// it turns any captured (challenge, response) pair into a permanent bearer
+	// token for that RID - replayable forever, from any process, on any session.
+	if (!_fChallengeIsOurs)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN: challenge was not generated by this context");
+		return SEC_E_INVALID_TOKEN;
+	}
 	CStoredCredentialManager* manager = CStoredCredentialManager::Instance();
 	if (!manager->VerifySignatureChallengeResponse(dwRid, pbChallenge, dwChallengeSize, pbResponse, dwResponseSize))  // NOSONAR - SCOPE-01: local scoped to block; init-statement refactor deferred
 	{

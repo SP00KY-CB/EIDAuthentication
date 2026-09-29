@@ -43,7 +43,9 @@ HRESULT EIDUnlockLogonPack(
 //szAuthPackageValue must be freed by  LsaFreeMemory
 HRESULT CallAuthPackage(LPCWSTR username ,LPWSTR * szAuthPackageValue, PULONG szAuthPackageLen);
 
-VOID EIDDebugPrintEIDUnlockLogonStruct(UCHAR dwLevel, PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon) ;
+// dwCspDataLength must be the length the LSA supplied for the CspData block
+// (Logon.CspDataLength), not a value read out of the buffer being dumped.
+VOID EIDDebugPrintEIDUnlockLogonStruct(UCHAR dwLevel, PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, ULONG dwCspDataLength) ;
 
 NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAuthenticationBase, ULONG AuthenticationInformationLength);
 

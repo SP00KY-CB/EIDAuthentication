@@ -495,6 +495,23 @@ HRESULT CEIDCredential::SetStringValue(
         CPFT_PASSWORD_TEXT == _rgCredProvFieldDescriptors[dwFieldID].cpft)) 
     {
         PWSTR* ppwszStored = &_rgFieldStrings[dwFieldID];
+        // Wipe before releasing. LogonUI calls this on EVERY KEYSTROKE, and it
+        // frees the previous value - so without this, typing an N-character PIN
+        // released N-1 progressively longer prefixes of it, in clear, to the COM
+        // heap. Every other PIN path in this class already scrubs; this one, the
+        // hottest, did not, which undid the care taken everywhere else.
+        //
+        // Scrub any password-type field, not just SFI_PIN, so a future field
+        // gets the same treatment by default.
+        if (*ppwszStored != nullptr &&
+            CPFT_PASSWORD_TEXT == _rgCredProvFieldDescriptors[dwFieldID].cpft)
+        {
+            size_t cchStored = 0;
+            if (SUCCEEDED(StringCchLengthW(*ppwszStored, STRSAFE_MAX_CCH, &cchStored)))
+            {
+                SecureZeroMemory(*ppwszStored, cchStored * sizeof(**ppwszStored));
+            }
+        }
         CoTaskMemFree(*ppwszStored);
 
   hr = SHStrDupW(pwz, ppwszStored);
