@@ -29,7 +29,7 @@ jobs:
         env:
           SELF_CHECK_NAME: "Collate PR report"
           SONAR_PROJECT: "DangerDawgAU_EIDAuthentication"
-          AIKIDO_REPO_NAME: "EIDAuthentication"
+          AIKIDO_REPO_NAME: "OpenAccessEID"
           AIKIDO_API_CLIENT_ID: ${{ secrets.AIKIDO_API_CLIENT_ID }}
           AIKIDO_API_CLIENT_SECRET: ${{ secrets.AIKIDO_API_CLIENT_SECRET }}
           # Optional: Aikido's internal repo id for the code-quality endpoint. If

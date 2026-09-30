@@ -30,7 +30,7 @@
 
     If you would prefer signed binaries so you do NOT have to disable LSA
     Protection, please raise an issue at:
-    https://github.com/DangerDawgAU/EIDAuthentication/issues
+    https://github.com/SP00KY-CB/OpenAccessEID/issues
     and request a code-signed release.
 #>
 
@@ -147,7 +147,7 @@ function Show-WarningPage {
     Write-Host "Alternative: request a signed release" -ForegroundColor Cyan
     Write-Host "  If you cannot disable LSA Protection, you can request a code-signed" -ForegroundColor Gray
     Write-Host "  build by opening an issue at:" -ForegroundColor Gray
-    Write-Host "    https://github.com/DangerDawgAU/EIDAuthentication/issues" -ForegroundColor Gray
+    Write-Host "    https://github.com/SP00KY-CB/OpenAccessEID/issues" -ForegroundColor Gray
     Write-Host ""
     Write-Host "Current state of this machine:" -ForegroundColor Cyan
     Write-Host "  OS version      : $($State.OSVersion)" -ForegroundColor Gray

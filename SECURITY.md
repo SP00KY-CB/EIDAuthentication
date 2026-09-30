@@ -30,4 +30,4 @@ Windows version tested.
   residual risks, is documented in [SECURITY_REVIEW.md](SECURITY_REVIEW.md).
 - Release artifacts are scanned with VirusTotal in CI and carry SLSA build
   provenance attestations (`gh attestation verify <file> --repo
-  DangerDawgAU/EIDAuthentication`).
+  SP00KY-CB/OpenAccessEID`).

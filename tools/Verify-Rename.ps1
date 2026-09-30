@@ -10,9 +10,8 @@
     - the installer's migration code (Installerx64.nsi);
     - upgrade documentation, test plans, release notes and dated historical
       plans/specs;
-    - external identifiers that change only when the GitHub repository itself
-      is renamed: repository URLs, the SonarCloud project key and the Aikido
-      repository name.
+    - the SonarCloud project key, an external identifier configured in
+      SonarCloud.
 
   The bare token "EID" is ALLOWED and must not be flagged - EIDCardLibrary,
   EIDCredentialProvider, the L$_EID_ LSA secret prefix and friends are all
@@ -52,8 +51,9 @@ $allowedFiles = @(
     ':!docs/BETA_RELEASE_NOTES.md',
     ':!docs/superpowers/*'
 )
-# External identifiers: renamed together with the GitHub repository, not before.
-$allowedLine = 'DangerDawgAU/EIDAuthentication|DangerDawgAU_EIDAuthentication|DangerDawgAU%2FEIDAuthentication|AIKIDO_REPO_NAME: "?EIDAuthentication'
+# The SonarCloud project key is an external identifier set in SonarCloud itself;
+# it keeps its original value unless the project key is changed there first.
+$allowedLine = 'DangerDawgAU_EIDAuthentication'
 
 $hits = @(git grep -n --fixed-strings $ForbiddenToken -- $allowedFiles 2>$null |
           Where-Object { ($_ -replace $allowedLine, '') -match [regex]::Escape($ForbiddenToken) })

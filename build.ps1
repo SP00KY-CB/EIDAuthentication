@@ -507,7 +507,7 @@ if ($Configuration -eq "Release") {
             -pn 'OpenAccessEID' `
             -pv '1.0.0' `
             -ps 'OpenAccess EID Contributors' `
-            -nsb 'https://github.com/DangerDawgAU/EIDAuthentication' `
+            -nsb 'https://github.com/SP00KY-CB/OpenAccessEID' `
             -m $sbomOut 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
         if ($LASTEXITCODE -eq 0) {
             Write-Host ("SBOM written under: {0}" -f $sbomOut) -ForegroundColor Green
