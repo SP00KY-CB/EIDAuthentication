@@ -81,5 +81,5 @@ endorsed by My Smart Logon.
 
 ```
 certutil -hashfile EIDInstallx64.exe SHA256
-gh attestation verify EIDInstallx64.exe --repo DangerDawgAU/EIDAuthentication
+gh attestation verify EIDInstallx64.exe --repo SP00KY-CB/OpenAccessEID
 ```

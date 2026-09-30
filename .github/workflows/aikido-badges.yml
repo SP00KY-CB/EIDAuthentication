@@ -27,7 +27,7 @@ jobs:
         env:
           AIKIDO_API_CLIENT_ID: ${{ secrets.AIKIDO_API_CLIENT_ID }}
           AIKIDO_API_CLIENT_SECRET: ${{ secrets.AIKIDO_API_CLIENT_SECRET }}
-          AIKIDO_REPO_NAME: EIDAuthentication
+          AIKIDO_REPO_NAME: OpenAccessEID
         with:
           script: |
             const fs = require('fs');
