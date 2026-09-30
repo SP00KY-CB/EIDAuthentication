@@ -65,6 +65,20 @@ jobs:
             echo "--- stderr ---"; cat out/scan.err
           fi
 
+      - name: Probe plain scan (temporary)
+        if: github.event_name == 'pull_request'
+        env:
+          AIKIDO_CI_API_KEY: ${{ secrets.AIKIDO_CI_API_KEY }}
+          REPO_ID: ${{ github.repository_id }}
+          COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set +e
+          timeout 900 npx --yes @aikidosec/ci-api-client@1.0.19 scan "$REPO_ID" "$COMMIT" "$COMMIT" main \
+            --apikey "$AIKIDO_CI_API_KEY" \
+            --fail-on-sast-scan --fail-on-iac-scan --fail-on-secrets-scan \
+            --minimum-severity-level LOW 2>&1 | sed 's/\x1b\[[0-9;]*m//g'
+          echo "scan exit code: ${PIPESTATUS[0]}"
+
       - name: Build badge JSON
         run: |
           node - <<'EOF'
