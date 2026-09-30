@@ -42,7 +42,9 @@ jobs:
           # branch - the same kind of commit the published badge describes.
           COMMIT: ${{ github.event.pull_request.base.sha || github.sha }}
         run: |
-          set -uo pipefail
+          # GitHub runs steps with bash -e; a non-zero exit from the client is
+          # expected here and must not abort the step before it is handled.
+          set +e -uo pipefail
           mkdir -p out
           if [ -z "${AIKIDO_CI_API_KEY}" ]; then
             echo "::warning::AIKIDO_CI_API_KEY is not set"
