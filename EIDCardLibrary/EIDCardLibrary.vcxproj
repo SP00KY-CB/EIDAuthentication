@@ -167,6 +167,7 @@
     <ClCompile Include="ErrorHandling.cpp" />
     <ClCompile Include="CSmartCardNotifier.cpp" />
     <ClCompile Include="GPO.cpp" />
+    <ClCompile Include="InputValidation.cpp" />
     <ClCompile Include="..\EIDCredentialProvider\guid.cpp" />
     <ClCompile Include="Package.cpp" />
     <ClCompile Include="Registration.cpp" />
@@ -195,6 +196,7 @@
     <ClInclude Include="ErrorHandling.h" />
     <ClInclude Include="GPO.h" />
     <ClInclude Include="guid.h" />
+    <ClInclude Include="InputValidation.h" />
     <ClInclude Include="Package.h" />
     <ClInclude Include="Registration.h" />
     <ClInclude Include="SmartCardModule.h" />

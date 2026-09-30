@@ -38,6 +38,13 @@ constexpr size_t HEADER_TOTAL_SIZE = 0x60;  // 96 bytes
 
 // Crypto parameters
 constexpr DWORD PBKDF2_ITERATIONS = 600000;  // OWASP 2024 recommendation
+// Bounds applied to the iteration count read from a file header on import.
+// Honouring the header lets PBKDF2_ITERATIONS be raised later without making
+// existing exports unreadable - but the header is attacker-supplied, so a floor
+// is required or "agility" becomes a downgrade attack, and a ceiling stops a
+// hostile file from pinning a CPU for hours.
+constexpr DWORD PBKDF2_MIN_ITERATIONS = 100000;
+constexpr DWORD PBKDF2_MAX_ITERATIONS = 10000000;
 constexpr DWORD PBKDF2_SALT_SIZE = 16;
 constexpr DWORD PBKDF2_KEY_SIZE = 32;        // 256 bits
 constexpr DWORD GCM_NONCE_SIZE = 12;         // 96 bits (GCM recommendation)

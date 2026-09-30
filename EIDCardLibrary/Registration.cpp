@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -35,7 +35,7 @@ BOOL StartLogging(UCHAR level);
 
 
 // Non-const string buffers for Windows API compatibility (AddSecurityPackage/DeleteSecurityPackage require LPWSTR)
-static WCHAR s_wszAuthenticationPackageName[] = L"EIDAuthenticationPackage";  // NOSONAR - GLOBAL-01: Runtime-initialized LSA state
+static WCHAR s_wszAuthenticationPackageName[] = L"OpenAccessEIDPackage";  // NOSONAR - GLOBAL-01: Runtime-initialized LSA state
 
 
 /** Used to append a string to a multi string reg key */
@@ -272,18 +272,27 @@ BOOL UnRegisterTheSecurityPackage()
 /** Installation and uninstallation routine
 */
 
-void EIDAuthenticationPackageDllRegister()
+void OpenAccessEIDPackageDllRegister()
 {
+	// Remove any stale pre-v2.0.00 entry before adding the new one, so an in-place
+	// upgrade cannot leave both names registered.
+	RemoveValueFromMultiSz(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"Security Packages", LEGACY_AUTHENTICATIONPACKAGENAMET);
+	RemoveValueFromMultiSz(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"Authentication Packages", LEGACY_AUTHENTICATIONPACKAGENAMET);
 	// Register as Security Package (SSP interface)
 	AppendValueToMultiSz(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"Security Packages", AUTHENTICATIONPACKAGENAMET);
 	// Also register as Authentication Package (AP interface) for LsaLookupAuthenticationPackage
 	AppendValueToMultiSz(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"Authentication Packages", AUTHENTICATIONPACKAGENAMET);
 }
 
-void EIDAuthenticationPackageDllUnRegister()
+void OpenAccessEIDPackageDllUnRegister()
 {
 	RemoveValueFromMultiSz(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"Security Packages", AUTHENTICATIONPACKAGENAMET);
 	RemoveValueFromMultiSz(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"Authentication Packages", AUTHENTICATIONPACKAGENAMET);
+	// Strip the pre-v2.0.00 package name too. An upgrade where the old uninstaller never
+	// ran would otherwise leave LSA referencing EIDAuthenticationPackage.dll after that
+	// file has been deleted.
+	RemoveValueFromMultiSz(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"Security Packages", LEGACY_AUTHENTICATIONPACKAGENAMET);
+	RemoveValueFromMultiSz(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"Authentication Packages", LEGACY_AUTHENTICATIONPACKAGENAMET);
 }
 
 void EIDPasswordChangeNotificationDllRegister()
@@ -369,8 +378,8 @@ void EIDConfigurationWizardDllUnRegister()
 	RegDeleteTree(HKEY_CLASSES_ROOT, L"CLSID\\{F5D846B4-14B0-11DE-B23C-27A355D89593}");
 }
 
-// Trace configuration registry path: HKLM\SOFTWARE\EIDAuthentication\LogManager
-static const TCHAR szTraceConfigKey[] = L"SOFTWARE\\EIDAuthentication\\LogManager";
+// Trace configuration registry path: HKLM\SOFTWARE\OpenAccessEID\LogManager
+static const TCHAR szTraceConfigKey[] = L"SOFTWARE\\OpenAccessEID\\LogManager";
 
 // Default values for trace configuration
 static const DWORD dwDefaultLevel = 4;  // WINEVENT_LEVEL_INFO
@@ -585,10 +594,10 @@ BOOL GetTraceConfig(DWORD* pdwLevel, LPWSTR szLogPath, DWORD cchPath, DWORD* pdw
 		}
 	}
 
-	// GPO override: values under SOFTWARE\Policies\EIDAuthentication\LogManager win over local config,
+	// GPO override: values under SOFTWARE\Policies\OpenAccessEID\LogManager win over local config,
 	// so EnableLogging() (which builds the ETW autologger from these values) honours Group Policy.
 	HKEY hPolicy = nullptr;
-	if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\EIDAuthentication\\LogManager", 0, KEY_READ, &hPolicy) == ERROR_SUCCESS)
+	if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\OpenAccessEID\\LogManager", 0, KEY_READ, &hPolicy) == ERROR_SUCCESS)
 	{
 		DWORD dwPolType = 0;
 		DWORD dwPolVal = 0;

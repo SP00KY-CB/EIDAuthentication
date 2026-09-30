@@ -1,6 +1,6 @@
-# EID Authentication - Icon Requirements
+# OpenAccess EID - Icon Requirements
 
-This document describes all icons required for the EID Authentication project.
+This document describes all icons required for the OpenAccess EID project.
 
 ## Icon Format Specifications
 
@@ -186,7 +186,7 @@ These icons are embedded in the executable and displayed in:
 - **Used by:**
   - `EIDConfigurationWizard.exe`
   - `EIDConfigurationWizardElevated.exe`
-- **Description:** Main configuration wizard for EID Authentication
+- **Description:** Main configuration wizard for OpenAccess EID
 - **Design suggestion:** Shield/gear combination, blue color scheme
 - **Current status:** Not implemented (using default Windows icon)
 
@@ -238,7 +238,7 @@ These icons appear on the Windows logon/lock screen.
 - **Current file:** `EIDCredentialProvider\SmartcardCredentialProvider.bmp`
 - **Active source:** `icons/cred_tile_image_rounded_transparent.bmp` (512x512 with rounded corners)
 - **Size:** 512x512 pixels (scaled by Windows as needed for logon screen display)
-- **Description:** The icon displayed next to the EID Authentication credential tile on the Windows logon screen, lock screen, and UAC prompts
+- **Description:** The icon displayed next to the OpenAccess EID credential tile on the Windows logon screen, lock screen, and UAC prompts
 - **Design suggestion:** Smart card icon with user silhouette or badge - should be immediately recognizable as a smart card login method
 - **Important:** This is the PRIMARY user-facing icon - users see this every time they log in!
 - **CRITICAL:** See "Credential Provider Tile Image (.bmp file)" section above for exact format requirements
@@ -248,10 +248,10 @@ These icons appear on the Windows logon/lock screen.
 ### 8. Installed Programs Display Icon
 - **Filename:** `cred_provider.ico`
 - **Used by:** Windows "Installed Programs" list (Apps & Features in Settings)
-- **Registry:** `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication\DisplayIcon`
+- **Registry:** `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID\DisplayIcon`
 - **Source:** Generated from `cred_tile_image_rounded_transparent.bmp` via `ConvertBmpToIco.ps1`
 - **Sizes:** 16x16, 32x32, 48x48, 256x256 (multi-resolution ICO)
-- **Description:** Icon displayed next to "EID Authentication" entry in Windows installed programs list, Add/Remove Programs, and uninstaller
+- **Description:** Icon displayed next to "OpenAccess EID" entry in Windows installed programs list, Add/Remove Programs, and uninstaller
 - **Current status:** Implemented (matches credential provider tile branding)
 - **Note:** Created by running `.\icons\ConvertBmpToIco.ps1` - regenerates ICO from current BMP source
 
@@ -275,13 +275,13 @@ These icons are displayed within the application UI dialogs.
 
 ## Branding Icons
 
-### 10. EID Authentication Brand Icon
+### 10. OpenAccess EID Brand Icon
 - **Filename:** `brand_main.ico`
 - **Used by:**
   - Start Menu folder icon
   - Uninstaller
   - About dialogs (future)
-- **Description:** Main brand icon for EID Authentication suite
+- **Description:** Main brand icon for OpenAccess EID suite
 - **Design suggestion:** Smart card with lock, professional blue/gold color scheme
 - **Current status:** Not implemented
 
@@ -291,7 +291,7 @@ These icons are displayed within the application UI dialogs.
 
 All icons should be placed in:
 ```
-C:\Users\user\Documents\EIDAuthentication\icons\
+C:\Users\user\Documents\OpenAccessEID\icons\
 ```
 
 ---

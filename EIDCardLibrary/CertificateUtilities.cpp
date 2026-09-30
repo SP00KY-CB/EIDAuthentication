@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -335,7 +335,7 @@ BOOL AskForCard(LPWSTR szReader, DWORD ReaderLength,LPWSTR szCard,DWORD CardLeng
 					L"This typically means:\n"
 					L"1. No smart card reader is installed on this system\n"
 					L"2. The Smart Card service is disabled\n\n"
-					L"To use EID Authentication, you need:\n"
+					L"To use OpenAccess EID, you need:\n"
 					L"- A physical smart card reader, OR\n"
 					L"- A virtual smart card (requires TPM)\n\n"
 					L"Run InstallVirtualSmartCard.ps1 (as Administrator) to create a virtual smart card if your system has TPM.",

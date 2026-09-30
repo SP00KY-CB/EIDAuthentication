@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Build EIDAuthentication Project
+    Build OpenAccess EID Project
 
 .DESCRIPTION
-    This script builds all components of the EID Authentication system:
-    - EIDAuthenticationPackage.dll (LSA authentication package)
+    This script builds all components of the OpenAccess EID system:
+    - OpenAccessEIDPackage.dll (LSA authentication package)
     - EIDCredentialProvider.dll (Credential Provider v2)
     - EIDPasswordChangeNotification.dll (Password change notification)
     - EIDConfigurationWizard.exe (Configuration tool)
@@ -40,7 +40,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "Building EID Authentication" -ForegroundColor Cyan
+Write-Host "Building OpenAccess EID" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Configuration: $Configuration" -ForegroundColor White
 Write-Host "Platform: $Platform" -ForegroundColor White
@@ -232,12 +232,12 @@ if (Test-Path $buildDir) {
 # Build the solution
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "Building solution: EIDCredentialProvider.sln" -ForegroundColor Cyan
+Write-Host "Building solution: OpenAccessEID.sln" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Build output will be logged to build.log" -ForegroundColor White
 
 $buildArgs = @(
-    "EIDCredentialProvider.sln",
+    "OpenAccessEID.sln",
     "/Rebuild",
     "$Configuration|$Platform"
 )
@@ -442,7 +442,7 @@ if ($Configuration -eq "Release") {
 
     $manifestPath = Join-Path $PSScriptRoot 'Installer\SHA256SUMS.txt'
     $lines = @()
-    $lines += "# EID Authentication - SHA-256 manifest"
+    $lines += "# OpenAccess EID - SHA-256 manifest"
     $lines += ("# Generated: {0}  (UTC)" -f ([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')))
     $lines += ("# Configuration: {0}   Platform: {1}" -f $Configuration, $Platform)
     $lines += "# Format: <sha256>  <relative-path>"
@@ -504,9 +504,9 @@ if ($Configuration -eq "Release") {
         & $sbomTool.Source generate `
             -b $buildOutDir `
             -bc $PSScriptRoot `
-            -pn 'EIDAuthentication' `
+            -pn 'OpenAccessEID' `
             -pv '1.0.0' `
-            -ps 'EID Authentication Contributors' `
+            -ps 'OpenAccess EID Contributors' `
             -nsb 'https://github.com/DangerDawgAU/EIDAuthentication' `
             -m $sbomOut 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
         if ($LASTEXITCODE -eq 0) {

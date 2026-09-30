@@ -1,0 +1,10 @@
+# Fuzz corpus seeds encode on-wire struct layouts byte for byte. Without this,
+# core.autocrlf rewrites 0x0A bytes to 0x0D 0x0A on checkout and silently
+# corrupts every seed containing a newline byte - which, for structs full of
+# length and offset fields, is most of them. Treat them as binary.
+*.bin binary
+
+# Crash reproducers are raw bytes too, if one is ever committed deliberately.
+crash-* binary
+leak-* binary
+timeout-* binary

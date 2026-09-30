@@ -1,5 +1,5 @@
 /*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -145,8 +145,8 @@ extern "C"
 	)
 	{
 		// Static buffers for SecPkgInfo Name/Comment (non-const SEC_WCHAR* required by API)
-		static SEC_WCHAR s_szPackageName[] = TEXT("EIDAuthenticationPackage");
-		static SEC_WCHAR s_szPackageComment[] = TEXT("EIDAuthenticationPackage");
+		static SEC_WCHAR s_szPackageName[] = TEXT("OpenAccessEIDPackage");
+		static SEC_WCHAR s_szPackageComment[] = TEXT("OpenAccessEIDPackage");
 
 		PackageInfo->fCapabilities = SECPKG_FLAG_LOGON |
 			SECPKG_FLAG_MULTI_REQUIRED|
@@ -752,7 +752,16 @@ extern "C"
 				ContextSizes->cbMaxSignature = 0;
 				ContextSizes->cbSecurityTrailer = 0;
 				ContextSizes->cbBlockSize = 0;
-				ContextSizes->cbMaxToken = 300;
+				// 300 was never enough and is now actively wrong. A challenge
+				// token is sizeof(EID_CHALLENGE_MESSAGE) + a 256-byte challenge
+				// + 2 bytes per username character, i.e. over 300 for any name
+				// of five characters or more; a response carries an RSA
+				// signature, 512 bytes on an RSA-4096 card. Those writes used
+				// to overflow the caller's token silently and are now refused
+				// outright, so a peer that sizes its buffer from this value -
+				// the documented idiom - would fail every handshake. Match the
+				// package's own advertised cbMaxToken instead.
+				ContextSizes->cbMaxToken = 5000;
 				break;
 			case SECPKG_ATTR_NAMES:
 				if (!ContextHandle)

@@ -597,11 +597,17 @@ HRESULT WriteEncryptedFile(
     // Copy ciphertext
     memcpy(completeFile.data() + sizeof(header), ciphertext.data(), ciphertext.size());
 
-    // Compute HMAC
+    // Compute HMAC. The return value MUST be checked: fileHmac is
+    // value-initialised, so on failure it stays all zeroes and we would write a
+    // file whose stored HMAC is a constant an attacker can trivially match.
     std::vector<BYTE> fileHmac(HMAC_SIZE);
-    ComputeHMAC(derivedKey.rgbAuthKey, PBKDF2_KEY_SIZE,
+    if (!ComputeHMAC(derivedKey.rgbAuthKey, PBKDF2_KEY_SIZE,
         completeFile.data(), static_cast<DWORD>(completeFile.size()),
-        fileHmac.data(), HMAC_SIZE);
+        fileHmac.data(), HMAC_SIZE))
+    {
+        EIDM_TRACE_ERROR(L"ComputeHMAC failed while writing the export file");
+        return HRESULT_FROM_WIN32(ERROR_ENCRYPTION_FAILED);
+    }
 
     // Append HMAC
     completeFile.insert(completeFile.end(), fileHmac.begin(), fileHmac.end());
@@ -721,8 +727,13 @@ HRESULT ReadEncryptedFile(
     }
 
     // Derive key from passphrase using salt from file header
+    // Use the iteration count the file records rather than the current
+    // constant, so raising PBKDF2_ITERATIONS does not make older exports
+    // unreadable. DeriveKeyFromPassphraseWithSalt clamps it - the header is
+    // attacker-supplied and an unclamped value of 1 would be a downgrade.
     CRYPTO_STATUS cryptoStatus = DeriveKeyFromPassphraseWithSalt(
-        wsPassword.c_str(), wsPassword.length(), header.PBKDF2Salt, &derivedKey);
+        wsPassword.c_str(), wsPassword.length(), header.PBKDF2Salt, &derivedKey,
+        header.PBKDF2Iterations);
     if (cryptoStatus != CRYPTO_STATUS::CRYPTO_SUCCESS)
     {
         EIDM_TRACE_ERROR(L"Failed to derive decryption key (wrong passphrase?)");
@@ -732,10 +743,17 @@ HRESULT ReadEncryptedFile(
     // Verify HMAC
     size_t nHmacOffset = fileData.size() - HMAC_SIZE;
     std::vector<BYTE> fileWithoutHmac(fileData.data(), fileData.data() + nHmacOffset);
+    // This one is the security-critical direction: on failure fileHmac stays
+    // all zeroes, and an attacker-supplied file whose stored HMAC is also all
+    // zeroes would then compare equal. Fail closed.
     std::vector<BYTE> fileHmac(HMAC_SIZE);
-    ComputeHMAC(derivedKey.rgbAuthKey, PBKDF2_KEY_SIZE,
+    if (!ComputeHMAC(derivedKey.rgbAuthKey, PBKDF2_KEY_SIZE,
         fileWithoutHmac.data(), static_cast<DWORD>(fileWithoutHmac.size()),
-        fileHmac.data(), HMAC_SIZE);
+        fileHmac.data(), HMAC_SIZE))
+    {
+        EIDM_TRACE_ERROR(L"ComputeHMAC failed while verifying the import file");
+        return HRESULT_FROM_WIN32(ERROR_DECRYPTION_FAILED);
+    }
 
     std::vector<BYTE> storedHmac(HMAC_SIZE);
     memcpy(storedHmac.data(), fileData.data() + nHmacOffset, HMAC_SIZE);

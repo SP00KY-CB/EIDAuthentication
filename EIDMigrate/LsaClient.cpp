@@ -4,6 +4,7 @@
 #include "LsaClient.h"
 #include "Tracing.h"
 #include "../EIDCardLibrary/StoredCredentialManagement.h"  // For EID_PRIVATE_DATA
+#include "../EIDCardLibrary/InputValidation.h"  // Canonical EID_PRIVATE_DATA layout rule
 #include <lm.h>  // NOSONAR - INCLUDE-01: include order/casing significant for Windows SDK
 #include <ntstatus.h>
 #include <sddl.h>  // For ConvertSidToStringSidW
@@ -193,13 +194,21 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
 
             // Parse the secret data to get certificate hash and encryption type
             // The secret format is: EID_PRIVATE_DATA structure
-            // SECURITY: require the full fixed struct (not just up to Hash) so the later
-            // "Length - sizeof(EID_PRIVATE_DATA)" offset math cannot integer-underflow -> OOB read.
-            constexpr DWORD dwMinPrivateDataSize = sizeof(EID_PRIVATE_DATA);
-
-            if (pSecretData->Length >= dwMinPrivateDataSize)
+            // SECURITY: one layout rule, shared with EIDCardLibrary and the fuzz
+            // harness (EIDValidatePrivateDataLayout in InputValidation.cpp).
+            //
+            // What used to be here was a third, divergent implementation: it
+            // required sizeof(EID_PRIVATE_DATA) rather than FIELD_OFFSET(...Data)
+            // as the minimum, bounded the certificate against the ABSOLUTE
+            // pSecretData->Length while bounding the key and password against
+            // "Length - sizeof(EID_PRIVATE_DATA)", and did each check inline at
+            // the point of use. Three rules for one invariant is how they drift.
+            PEID_PRIVATE_DATA pPrivateData = reinterpret_cast<PEID_PRIVATE_DATA>(pSecretData->Buffer); // NOSONAR - Cast from PBYTE* to PEID_PRIVATE_DATA required for LSA private data structure
+            if (EIDValidatePrivateDataLayout(pPrivateData, pSecretData->Length))
             {
-                PEID_PRIVATE_DATA pPrivateData = reinterpret_cast<PEID_PRIVATE_DATA>(pSecretData->Buffer); // NOSONAR - Cast from PBYTE* to PEID_PRIVATE_DATA required for LSA private data structure
+                // Every region below is now known to lie inside the blob, so the
+                // per-region bounds checks that used to wrap each extraction are
+                // gone rather than duplicated.
 
                 // Validate structure fields before accessing
                 if (pPrivateData->dwType >= static_cast<EID_PRIVATE_DATA_TYPE>(1) &&  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
@@ -213,14 +222,10 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
                     info.EncryptionType = static_cast<EID_PRIVATE_DATA_TYPE>(0);
                 }
 
-                // Copy certificate hash with bounds checking
-                DWORD dwHashCopySize = min(CERT_HASH_LENGTH, pSecretData->Length - offsetof(EID_PRIVATE_DATA, Hash));
+                // Hash sits inside the fixed header, which the validator has
+                // already established is fully present, so it copies whole.
+                constexpr DWORD dwHashCopySize = CERT_HASH_LENGTH;
                 memcpy(info.CertificateHash, pPrivateData->Hash, dwHashCopySize);
-                // Zero out any remaining hash bytes
-                if (dwHashCopySize < CERT_HASH_LENGTH)  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
-                {
-                    SecureZeroMemory(info.CertificateHash + dwHashCopySize, CERT_HASH_LENGTH - dwHashCopySize);
-                }
 
                 // BUG FIX #13: Extract certificate, key, and password data from LSA secret
                 // Previously, enumeration only extracted hash and type, causing exports
@@ -237,31 +242,18 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
                 {
                     // Certificate offset is relative to Data field, which is at pPrivateData->Data
                     BYTE* pCertificate = pPrivateData->Data + pPrivateData->dwCertificatOffset;
+                    info.Certificate.assign(pCertificate, pCertificate + pPrivateData->dwCertificatSize);
+                    EIDM_TRACE_VERBOSE(L"Extracted certificate: %u bytes at offset %u",
+                        pPrivateData->dwCertificatSize, pPrivateData->dwCertificatOffset);
 
-                    // Validate the certificate data is within the secret buffer
-                    DWORD dwCertOffset = static_cast<DWORD>(pCertificate - reinterpret_cast<BYTE*>(pPrivateData)); // NOSONAR - Cast PEID_PRIVATE_DATA* to BYTE* required for pointer arithmetic within LSA secret buffer
-                    DWORD dwCertEnd = dwCertOffset + pPrivateData->dwCertificatSize;
-
-                    if (dwCertEnd <= pSecretData->Length)
+                    // Verify it looks like a DER certificate (starts with 0x30)
+                    if (pCertificate[0] == 0x30)
                     {
-                        info.Certificate.assign(pCertificate, pCertificate + pPrivateData->dwCertificatSize);
-                        EIDM_TRACE_VERBOSE(L"Extracted certificate: %u bytes at offset %u",
-                            pPrivateData->dwCertificatSize, pPrivateData->dwCertificatOffset);
-
-                        // Verify it looks like a DER certificate (starts with 0x30)
-                        if (pCertificate[0] == 0x30)
-                        {
-                            EIDM_TRACE_VERBOSE(L"Certificate data verified (DER format)");
-                        }
-                        else
-                        {
-                            EIDM_TRACE_WARN(L"Certificate data doesn't look like DER (starts with 0x%02X)", pCertificate[0]);
-                        }
+                        EIDM_TRACE_VERBOSE(L"Certificate data verified (DER format)");
                     }
                     else
                     {
-                        EIDM_TRACE_WARN(L"Certificate data extends beyond buffer (offset=%u, size=%u, total=%u)",
-                            dwCertOffset, pPrivateData->dwCertificatSize, pSecretData->Length);
+                        EIDM_TRACE_WARN(L"Certificate data doesn't look like DER (starts with 0x%02X)", pCertificate[0]);
                     }
                 }
 
@@ -269,40 +261,18 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
                 // IMPORTANT: Offsets are relative to Data field, not struct start
                 if (pPrivateData->dwSymetricKeySize > 0)  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
                 {
-                    DWORD dwKeyEnd = pPrivateData->dwSymetricKeyOffset + pPrivateData->dwSymetricKeySize;
-                    // Check bounds relative to Data field size
-                    DWORD dwDataSize = pSecretData->Length - sizeof(EID_PRIVATE_DATA);
-                    if (dwKeyEnd <= dwDataSize)
-                    {
-                        BYTE* pKey = pPrivateData->Data + pPrivateData->dwSymetricKeyOffset;
-                        info.SymmetricKey.assign(pKey, pKey + pPrivateData->dwSymetricKeySize);
-                        EIDM_TRACE_VERBOSE(L"Extracted symmetric key: %u bytes", pPrivateData->dwSymetricKeySize);
-                    }
-                    else
-                    {
-                        EIDM_TRACE_WARN(L"Key offset out of bounds (offset=%u, size=%u, data_size=%u), skipping key data",
-                            pPrivateData->dwSymetricKeyOffset, pPrivateData->dwSymetricKeySize, dwDataSize);
-                    }
+                    BYTE* pKey = pPrivateData->Data + pPrivateData->dwSymetricKeyOffset;
+                    info.SymmetricKey.assign(pKey, pKey + pPrivateData->dwSymetricKeySize);
+                    EIDM_TRACE_VERBOSE(L"Extracted symmetric key: %u bytes", pPrivateData->dwSymetricKeySize);
                 }
 
                 // Extract encrypted password
                 // IMPORTANT: Offsets are relative to Data field, not struct start
                 if (pPrivateData->usPasswordLen > 0)  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
                 {
-                    DWORD dwPwdEnd = pPrivateData->dwPasswordOffset + pPrivateData->usPasswordLen;
-                    // Check bounds relative to Data field size
-                    DWORD dwDataSize = pSecretData->Length - sizeof(EID_PRIVATE_DATA);
-                    if (dwPwdEnd <= dwDataSize)
-                    {
-                        BYTE* pPassword = pPrivateData->Data + pPrivateData->dwPasswordOffset;
-                        info.EncryptedPassword.assign(pPassword, pPassword + pPrivateData->usPasswordLen);
-                        EIDM_TRACE_VERBOSE(L"Extracted encrypted password: %u bytes", pPrivateData->usPasswordLen);
-                    }
-                    else
-                    {
-                        EIDM_TRACE_WARN(L"Password offset out of bounds (offset=%u, size=%u, data_size=%u), skipping password data",
-                            pPrivateData->dwPasswordOffset, pPrivateData->usPasswordLen, dwDataSize);
-                    }
+                    BYTE* pPassword = pPrivateData->Data + pPrivateData->dwPasswordOffset;
+                    info.EncryptedPassword.assign(pPassword, pPassword + pPrivateData->usPasswordLen);
+                    EIDM_TRACE_VERBOSE(L"Extracted encrypted password: %u bytes", pPrivateData->usPasswordLen);
                 }
 
                 EIDM_TRACE_VERBOSE(L"Parsed credential: type=%d, hash_size=%u, cert_size=%zu",
@@ -310,7 +280,7 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
             }
             else
             {
-                EIDM_TRACE_ERROR(L"Secret data too small: %u < %u", pSecretData->Length, dwMinPrivateDataSize);
+                EIDM_TRACE_ERROR(L"EID_PRIVATE_DATA layout invalid (%u bytes) for RID %u", pSecretData->Length, dwRid);
                 LsaFreeMemory(pSecretData);
                 continue;
             }
@@ -387,11 +357,13 @@ HRESULT ExportLsaCredential(_In_ DWORD dwRid, _Out_ CredentialInfo& info)
     {
         PEID_PRIVATE_DATA pPrivateData = reinterpret_cast<PEID_PRIVATE_DATA>(pSecretData->Buffer);  // NOSONAR - CAST-01: Win32/COM interop cast, layout-verified
 
-        // SECURITY: require the full fixed struct before reading fields / computing
-        // "Length - sizeof(EID_PRIVATE_DATA)" below, so a short/corrupt secret cannot underflow -> OOB read.
-        if (pSecretData->Length < sizeof(EID_PRIVATE_DATA))
+        // Same single layout rule as the enumeration path above. This was the
+        // second divergent copy: it also used sizeof(EID_PRIVATE_DATA) as both
+        // the minimum size and the data-region base, which double-counts the
+        // Data[4] placeholder and its padding.
+        if (!EIDValidatePrivateDataLayout(pPrivateData, pSecretData->Length))
         {
-            EIDM_TRACE_WARN(L"ExportLsaCredential: LSA secret too small (%u bytes) - rejecting", pSecretData->Length);
+            EIDM_TRACE_WARN(L"ExportLsaCredential: EID_PRIVATE_DATA layout invalid (%u bytes) - rejecting", pSecretData->Length);
             LsaFreeMemory(pSecretData);
             LsaClose(hLsa);
             return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
@@ -405,57 +377,27 @@ HRESULT ExportLsaCredential(_In_ DWORD dwRid, _Out_ CredentialInfo& info)
         info.wsUsername = LookupUsernameByRid(dwRid);
         info.wsSid = LookupSidByUsername(info.wsUsername);
 
-        // Extract certificate, key, and password from the Data field
-        // IMPORTANT: Offsets are relative to Data field, and certificate offset can be 0!
-        DWORD dwDataSize = pSecretData->Length - sizeof(EID_PRIVATE_DATA);
-
-        // Extract certificate
+        // Offsets are relative to the Data field and are all validated above,
+        // so each extraction is a straight copy.
         if (pPrivateData->dwCertificatSize > 0)
         {
-            // Certificate offset is relative to Data field (can be 0!)
-            DWORD dwCertEnd = pPrivateData->dwCertificatOffset + pPrivateData->dwCertificatSize;
-            if (dwCertEnd <= dwDataSize)
-            {
-                BYTE* pCertificate = pPrivateData->Data + pPrivateData->dwCertificatOffset;
-                info.Certificate.assign(pCertificate, pCertificate + pPrivateData->dwCertificatSize);
-                EIDM_TRACE_VERBOSE(L"ExportLsaCredential: Extracted certificate: %u bytes", pPrivateData->dwCertificatSize);
-            }
-            else
-            {
-                EIDM_TRACE_WARN(L"ExportLsaCredential: Certificate data out of bounds");
-            }
+            BYTE* pCertificate = pPrivateData->Data + pPrivateData->dwCertificatOffset;
+            info.Certificate.assign(pCertificate, pCertificate + pPrivateData->dwCertificatSize);
+            EIDM_TRACE_VERBOSE(L"ExportLsaCredential: Extracted certificate: %u bytes", pPrivateData->dwCertificatSize);
         }
 
-        // Extract symmetric key
         if (pPrivateData->dwSymetricKeySize > 0)
         {
-            DWORD dwKeyEnd = pPrivateData->dwSymetricKeyOffset + pPrivateData->dwSymetricKeySize;
-            if (dwKeyEnd <= dwDataSize)
-            {
-                BYTE* pKey = pPrivateData->Data + pPrivateData->dwSymetricKeyOffset;
-                info.SymmetricKey.assign(pKey, pKey + pPrivateData->dwSymetricKeySize);
-                EIDM_TRACE_VERBOSE(L"ExportLsaCredential: Extracted symmetric key: %u bytes", pPrivateData->dwSymetricKeySize);
-            }
-            else
-            {
-                EIDM_TRACE_WARN(L"ExportLsaCredential: Symmetric key data out of bounds");
-            }
+            BYTE* pKey = pPrivateData->Data + pPrivateData->dwSymetricKeyOffset;
+            info.SymmetricKey.assign(pKey, pKey + pPrivateData->dwSymetricKeySize);
+            EIDM_TRACE_VERBOSE(L"ExportLsaCredential: Extracted symmetric key: %u bytes", pPrivateData->dwSymetricKeySize);
         }
 
-        // Extract encrypted password
         if (pPrivateData->usPasswordLen > 0)
         {
-            DWORD dwPwdEnd = pPrivateData->dwPasswordOffset + pPrivateData->usPasswordLen;
-            if (dwPwdEnd <= dwDataSize)
-            {
-                BYTE* pPassword = pPrivateData->Data + pPrivateData->dwPasswordOffset;
-                info.EncryptedPassword.assign(pPassword, pPassword + pPrivateData->usPasswordLen);
-                EIDM_TRACE_VERBOSE(L"ExportLsaCredential: Extracted encrypted password: %u bytes", pPrivateData->usPasswordLen);
-            }
-            else
-            {
-                EIDM_TRACE_WARN(L"ExportLsaCredential: Encrypted password data out of bounds");
-            }
+            BYTE* pPassword = pPrivateData->Data + pPrivateData->dwPasswordOffset;
+            info.EncryptedPassword.assign(pPassword, pPassword + pPrivateData->usPasswordLen);
+            EIDM_TRACE_VERBOSE(L"ExportLsaCredential: Extracted encrypted password: %u bytes", pPrivateData->usPasswordLen);
         }
 
         LsaFreeMemory(pSecretData);

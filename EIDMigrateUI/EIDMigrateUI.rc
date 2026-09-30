@@ -53,7 +53,7 @@ BEGIN
     BEGIN
         BLOCK "000004b0"
         BEGIN
-            VALUE "CompanyName", "EID Authentication contributors"
+            VALUE "CompanyName", "OpenAccess EID contributors"
             VALUE "LegalCopyright", "Copyright (C) 2009 Vincent Le Toux, (C) 2026 Contributors. LGPL-2.1"
             VALUE "FileDescription", "EID Credential Migration Tool"
             VALUE "FileVersion", EIDAuthenticateVersionText
@@ -372,7 +372,7 @@ END
 
 STRINGTABLE
 BEGIN
-    IDS_EID_NOT_AVAILABLE   "The EID Authentication Package is not available."
+    IDS_EID_NOT_AVAILABLE   "The OpenAccess EID Package is not available."
     IDS_REQUIRE_ADMIN       "EID Migrate Tool requires Administrator privileges."
 END
 

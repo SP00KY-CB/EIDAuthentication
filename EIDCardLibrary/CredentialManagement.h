@@ -9,6 +9,20 @@
 // Forward declaration - CCredential is defined below after CSecurityContext
 class CCredential;
 
+// Which side of the handshake a context belongs to. A context is created by
+// either SpInitLsaModeContext (client) or SpAcceptLsaModeContext (server) and
+// must never afterwards be driven by the other side's dispatcher: the two share
+// one global context list and one _State, so without this an attacker could
+// create a context via AcceptSecurityContext - binding it to a victim's RID -
+// and then call InitializeSecurityContext on the same handle to overwrite the
+// server's freshly generated challenge with bytes of their own choosing.
+enum class EID_CONTEXT_ROLE
+{
+	EIDCRUnbound,   // created but no message processed yet
+	EIDCRInitiate,  // client side: InitializeSecurityContext
+	EIDCRAccept,    // server side: AcceptSecurityContext
+};
+
 class CSecurityContext
 {
 public:
@@ -33,8 +47,20 @@ public:
 	~CSecurityContext();
 	PWSTR GetUserName();
 private:
+	// Returns TRUE if this context may act in the given role, claiming the role
+	// on first use. FALSE means the caller is trying to drive a context from the
+	// wrong side of the handshake.
+	BOOL ClaimRole(EID_CONTEXT_ROLE role);
+
 	CCredential* _pCredential;
 	EID_MESSAGE_STATE _State;
+	EID_CONTEXT_ROLE _Role;
+	// TRUE only when pbChallenge holds a nonce THIS context generated in
+	// BuildChallengeMessage. A challenge that arrived over the wire must never
+	// be fed to VerifySignatureChallengeResponse: the verifier would then be
+	// checking a signature over a value the attacker picked, making any
+	// captured (challenge, response) pair a permanent bearer token for that RID.
+	BOOL _fChallengeIsOurs;
 	UCHAR Hash[CERT_HASH_LENGTH]; // NOSONAR - LSASS-01: C-style buffer for LSASS/crypto hash safety
 	PCCERT_CONTEXT pCertContext;
 	DWORD dwRid;

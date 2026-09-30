@@ -1,5 +1,7 @@
 # OpenAccess EID Rename Implementation Plan
 
+> **Status (2026-09-30):** implemented on `release/v2.0.00`, together with the `security-fuzzing-hardening` branch, for the v2.0.00 prerelease. Deviations from the steps below: the legacy baseline is v1.3.00, not v1.2.00; migration reuses the old uninstaller from `.onInit` (made to wait with `_?=`) instead of a hand-written deregistration block; the ProgramData folder is renamed rather than copied, keeping its protected DACL; GitHub URLs, the SonarCloud key and the Aikido repo name are left for Task 12; runtime checks are `docs/VM_TEST_PLAN.md` Part R.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rename the project from "EID Authentication" to "OpenAccess EID", eliminating every occurrence of the token `EIDAuthentication` from source, installer, Group Policy templates, documentation and CI, while preserving all existing smart-card enrollments and the repository's stars and history.

@@ -1,13 +1,13 @@
-# EID Authentication - Group Policy Templates
+# OpenAccess EID - Group Policy Templates
 
 This directory contains the ADMX / ADML files that expose the **custom**
-EID Authentication policies in the Group Policy Editor (`gpedit.msc`) and
+OpenAccess EID policies in the Group Policy Editor (`gpedit.msc`) and
 the domain Group Policy Management Console (GPMC).
 
 ## Files
 
-- `EIDAuthentication.admx` - policy definitions
-- `en-US/EIDAuthentication.adml` - English display strings
+- `OpenAccessEID.admx` - policy definitions
+- `en-US/OpenAccessEID.adml` - English display strings
 
 ## Scope
 
@@ -27,19 +27,19 @@ HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider
 ### Local machine
 The NSIS installer copies these files to:
 
-- `%WINDIR%\PolicyDefinitions\EIDAuthentication.admx`
-- `%WINDIR%\PolicyDefinitions\en-US\EIDAuthentication.adml`
+- `%WINDIR%\PolicyDefinitions\OpenAccessEID.admx`
+- `%WINDIR%\PolicyDefinitions\en-US\OpenAccessEID.adml`
 
 They then appear under:
-`Computer Configuration \ Administrative Templates \ Windows Components \ EID Authentication`
+`Computer Configuration \ Administrative Templates \ Windows Components \ OpenAccess EID`
 
 ### Domain (Group Policy Central Store)
 For domain deployment, copy the files to the PolicyDefinitions central store
 on a domain controller:
 
 ```
-\\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions\EIDAuthentication.admx
-\\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions\en-US\EIDAuthentication.adml
+\\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions\OpenAccessEID.admx
+\\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions\en-US\OpenAccessEID.adml
 ```
 
 Once replicated, every GPMC console in the domain picks up the template

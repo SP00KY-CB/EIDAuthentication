@@ -22,7 +22,7 @@
 void ShowUsage()
 {
     fwprintf(stderr, L"\n");
-    fwprintf(stderr, L"EIDMigrate - EIDAuthentication Credential Migration Tool v%ls\n", EIDMIGRATE_APP_VERSION);
+    fwprintf(stderr, L"EIDMigrate - OpenAccess EID Credential Migration Tool v%ls\n", EIDMIGRATE_APP_VERSION);
     fwprintf(stderr, L"\n");
     fwprintf(stderr, L"Usage:\n");
     fwprintf(stderr, L"  EIDMigrate.exe <command> [options]\n");

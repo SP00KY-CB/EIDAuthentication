@@ -14,7 +14,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="EIDAuthenticationPackage.cpp">
+    <ClCompile Include="OpenAccessEIDPackage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="EIDRundll32Commands.cpp">
@@ -28,7 +28,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="EIDAuthenticationPackage.def">
+    <None Include="OpenAccessEIDPackage.def">
       <Filter>Source Files</Filter>
     </None>
     <None Include="ReadMe.txt" />

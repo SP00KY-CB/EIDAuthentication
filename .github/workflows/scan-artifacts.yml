@@ -29,7 +29,7 @@ on:
     paths:
       - 'EIDCardLibrary/**'
       - 'EIDCredentialProvider/**'
-      - 'EIDAuthenticationPackage/**'
+      - 'OpenAccessEIDPackage/**'
       - 'EIDPasswordChangeNotification/**'
       - 'EIDConfigurationWizard/**'
       - 'EIDConfigurationWizardElevated/**'
@@ -61,7 +61,7 @@ jobs:
         uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57  # v3
 
       - name: Build Solution (Release x64)
-        run: msbuild EIDCredentialProvider.sln /p:Configuration=Release /p:Platform=x64 /m /v:minimal
+        run: msbuild OpenAccessEID.sln /p:Configuration=Release /p:Platform=x64 /m /v:minimal
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
@@ -187,7 +187,7 @@ jobs:
         with:
           vt_api_key: ${{ secrets.VT_API_KEY }}
           files: |
-            ./artifacts/EIDAuthenticationPackage.dll
+            ./artifacts/OpenAccessEIDPackage.dll
             ./artifacts/EIDCredentialProvider.dll
             ./artifacts/EIDPasswordChangeNotification.dll
             ./artifacts/EIDConfigurationWizard.exe

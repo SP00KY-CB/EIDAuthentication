@@ -20,7 +20,7 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{4711AF6D-0E6C-4D71-9238-053FB0B287DA}</ProjectGuid>
-    <RootNamespace>EIDAuthenticationPackage</RootNamespace>
+    <RootNamespace>OpenAccessEIDPackage</RootNamespace>
     <Keyword>Win32Proj</Keyword>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -94,7 +94,7 @@
     <ClCompile>
       <LanguageStandard>stdcpp23</LanguageStandard>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS;%(PreprocessorDefinitions);WINVER=0x0600;_WIN32_WINNT=0x0600</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS;%(PreprocessorDefinitions);WINVER=0x0600;_WIN32_WINNT=0x0600</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel>
@@ -102,7 +102,7 @@
     </ClCompile>
     <Link>
       <OutputFile>$(OutDir)$(ProjectName).dll</OutputFile>
-      <ModuleDefinitionFile>EIDAuthenticationPackage.def</ModuleDefinitionFile>
+      <ModuleDefinitionFile>OpenAccessEIDPackage.def</ModuleDefinitionFile>
       <AdditionalDependencies>netapi32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs>%(DelayLoadDLLs);advapi32.dll</DelayLoadDLLs>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -121,7 +121,7 @@
     <ClCompile>
       <LanguageStandard>stdcpp23</LanguageStandard>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS;%(PreprocessorDefinitions);WINVER=0x0600;_WIN32_WINNT=0x0600</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS;%(PreprocessorDefinitions);WINVER=0x0600;_WIN32_WINNT=0x0600</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel>
@@ -129,7 +129,7 @@
     </ClCompile>
     <Link>
       <OutputFile>$(OutDir)$(ProjectName).dll</OutputFile>
-      <ModuleDefinitionFile>EIDAuthenticationPackage.def</ModuleDefinitionFile>
+      <ModuleDefinitionFile>OpenAccessEIDPackage.def</ModuleDefinitionFile>
       <AdditionalDependencies>netapi32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs>%(DelayLoadDLLs);advapi32.dll</DelayLoadDLLs>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -145,7 +145,7 @@
       <LanguageStandard>stdcpp23</LanguageStandard>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS;%(PreprocessorDefinitions);WINVER=0x0600;_WIN32_WINNT=0x0600</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS;%(PreprocessorDefinitions);WINVER=0x0600;_WIN32_WINNT=0x0600</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -158,7 +158,7 @@
     <Link>
       <AdditionalOptions>/LTCG  %(AdditionalOptions)</AdditionalOptions>
       <OutputFile>$(OutDir)$(ProjectName).dll</OutputFile>
-      <ModuleDefinitionFile>EIDAuthenticationPackage.def</ModuleDefinitionFile>
+      <ModuleDefinitionFile>OpenAccessEIDPackage.def</ModuleDefinitionFile>
       <AdditionalDependencies>netapi32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs>%(DelayLoadDLLs);advapi32.dll</DelayLoadDLLs>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -180,7 +180,7 @@
       <LanguageStandard>stdcpp23</LanguageStandard>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;EIDAUTHENTICATIONPACKAGE_EXPORTS;%(PreprocessorDefinitions);WINVER=0x0600;_WIN32_WINNT=0x0600</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;OPENACCESSEIDPACKAGE_EXPORTS;%(PreprocessorDefinitions);WINVER=0x0600;_WIN32_WINNT=0x0600</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -192,7 +192,7 @@
     <Link>
       <AdditionalOptions>/LTCG  %(AdditionalOptions)</AdditionalOptions>
       <OutputFile>$(OutDir)$(ProjectName).dll</OutputFile>
-      <ModuleDefinitionFile>EIDAuthenticationPackage.def</ModuleDefinitionFile>
+      <ModuleDefinitionFile>OpenAccessEIDPackage.def</ModuleDefinitionFile>
       <AdditionalDependencies>netapi32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs>%(DelayLoadDLLs);advapi32.dll</DelayLoadDLLs>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -206,13 +206,13 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="EIDAuthenticationPackage.cpp" />
+    <ClCompile Include="OpenAccessEIDPackage.cpp" />
     <ClCompile Include="EIDRundll32Commands.cpp" />
     <ClCompile Include="EIDSecuritySupportProvider.cpp" />
     <ClCompile Include="EIDSecuritySupportProviderUserMode.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="EIDAuthenticationPackage.def" />
+    <None Include="OpenAccessEIDPackage.def" />
     <None Include="ReadMe.txt" />
   </ItemGroup>
   <ItemGroup>

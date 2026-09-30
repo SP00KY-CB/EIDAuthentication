@@ -1,6 +1,6 @@
 # Security Policy
 
-EID Authentication is a Windows credential provider and LSA authentication
+OpenAccess EID is a Windows credential provider and LSA authentication
 package: it runs inside the logon path, partly in LSASS. Security reports are
 taken seriously and handled with priority.
 
@@ -18,7 +18,7 @@ Please report vulnerabilities privately — do not open a public issue.
 - You should receive an initial response within 7 days.
 
 Please include the affected component (e.g. `EIDCredentialProvider.dll`,
-`EIDAuthenticationPackage.dll`, installer), reproduction steps, and the
+`OpenAccessEIDPackage.dll`, installer), reproduction steps, and the
 Windows version tested.
 
 ## Scope notes

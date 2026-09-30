@@ -1,5 +1,5 @@
 ﻿/*
-    EID Authentication - Smart card authentication for Windows
+    OpenAccess EID - Smart card authentication for Windows
     Copyright (C) 2009 Vincent Le Toux
     Copyright (C) 2026 Contributors
 
@@ -202,11 +202,73 @@ extern "C"
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"pLogonSessionData->Sid is NULL");
 				__leave;
 			}
-			if (dwRid == *GetSidSubAuthority(pLogonSessionData->Sid, *GetSidSubAuthorityCount(pLogonSessionData->Sid) -1))
+			// Compare the WHOLE SID, not just the trailing RID.
+			//
+			// The previous check was
+			//     dwRid == *GetSidSubAuthority(Sid, *GetSidSubAuthorityCount(Sid) - 1)
+			// which discards the issuing domain entirely. On a domain-joined
+			// host CONTOSO\alice with RID 1105 therefore satisfied the check for
+			// the LOCAL account with RID 1105, and this function is what
+			// authorises EIDCMCreateStoredCredential /
+			// EIDCMRemoveStoredCredential / EIDCMHasStoredCredential against a
+			// given RID - so an unrelated principal could remove another local
+			// user's stored credential and deny them logon.
+			//
+			// dwRid always names a LOCAL account here (the credential store is
+			// keyed by local RID), so build the local account SID from this
+			// machine's account-domain SID and compare exactly. LSA policy is
+			// queried locally; nothing here touches the network, which matters
+			// for the air-gapped deployments this product targets.
 			{
-				// is current user = TRUE
-				fReturn = TRUE;
-				__leave;
+				LSA_OBJECT_ATTRIBUTES ObjectAttributes;
+				ZeroMemory(&ObjectAttributes, sizeof(ObjectAttributes));
+				LSA_HANDLE hPolicy = nullptr;
+				if (STATUS_SUCCESS != LsaOpenPolicy(nullptr, &ObjectAttributes, POLICY_VIEW_LOCAL_INFORMATION, &hPolicy))
+				{
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"LsaOpenPolicy failed; denying");
+					__leave;
+				}
+				PPOLICY_ACCOUNT_DOMAIN_INFO pDomainInfo = nullptr;
+				const NTSTATUS queryStatus = LsaQueryInformationPolicy(hPolicy, PolicyAccountDomainInformation,
+					reinterpret_cast<PVOID*>(&pDomainInfo));
+				LsaClose(hPolicy);
+				if (queryStatus != STATUS_SUCCESS || !pDomainInfo || !pDomainInfo->DomainSid)
+				{
+					if (pDomainInfo) LsaFreeMemory(pDomainInfo);
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"LsaQueryInformationPolicy failed; denying");
+					__leave;
+				}
+
+				// Local account SID = account-domain SID with dwRid appended.
+				const UCHAR ucDomainSubAuthorities = *GetSidSubAuthorityCount(pDomainInfo->DomainSid);
+				BOOL fIsSameUser = FALSE;
+				if (ucDomainSubAuthorities < SID_MAX_SUB_AUTHORITIES)
+				{
+					const DWORD cbAccountSid = GetSidLengthRequired(static_cast<UCHAR>(ucDomainSubAuthorities + 1));
+					PSID pAccountSid = static_cast<PSID>(EIDAlloc(cbAccountSid));
+					if (pAccountSid)
+					{
+						if (InitializeSid(pAccountSid, GetSidIdentifierAuthority(pDomainInfo->DomainSid),
+								static_cast<BYTE>(ucDomainSubAuthorities + 1)))
+						{
+							for (UCHAR i = 0; i < ucDomainSubAuthorities; i++)
+							{
+								*GetSidSubAuthority(pAccountSid, i) = *GetSidSubAuthority(pDomainInfo->DomainSid, i);
+							}
+							*GetSidSubAuthority(pAccountSid, ucDomainSubAuthorities) = dwRid;
+							fIsSameUser = EqualSid(pAccountSid, pLogonSessionData->Sid);
+						}
+						EIDFree(pAccountSid);
+					}
+				}
+				LsaFreeMemory(pDomainInfo);
+
+				if (fIsSameUser)
+				{
+					// is current user = TRUE
+					fReturn = TRUE;
+					__leave;
+				}
 			}
 			// is admin ?
 			SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
@@ -906,6 +968,24 @@ extern "C"
 		LPTSTR szUserName = NULL;
 		PLSA_TOKEN_INFORMATION_V2 MyTokenInformation = NULL;
 		DWORD dwRid = 0;
+		// Hoisted out of the body so the cleanup handler below can reach it.
+		// It used to be declared at the point of use, which meant the two error
+		// returns after GetPassword() succeeded left the plaintext Windows
+		// password both unwiped AND unfreed on the LSASS heap.
+		PWSTR szPassword = NULL;
+		__try
+		{
+		// INNER SEH - do not remove. This function has eighteen early `return`
+		// statements inside the body, and the PIN wipes used to sit only on the
+		// success path at the very bottom and in the __except. Every one of the
+		// other seventeen exits - including the ORDINARY WRONG-PIN PATH, which
+		// an attacker can drive at will - left the plaintext PIN sitting in
+		// these stack buffers. Tracing writes a MiniDumpNormal, which captures
+		// thread stacks, so that residue is reachable on disk.
+		//
+		// A __finally runs on normal fallthrough, on `return` unwinding, and on
+		// __leave, so wiring the cleanup here covers all eighteen exits without
+		// touching a single one of them.
 		__try
 		{
 			*SubStatus = STATUS_SUCCESS;
@@ -922,7 +1002,7 @@ extern "C"
 				return Status;
 			}
 			PEID_SMARTCARD_CSP_INFO pSmartCardCspInfo = reinterpret_cast<PEID_SMARTCARD_CSP_INFO>(pUnlockLogon->Logon.CspData);  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity
-			EIDDebugPrintEIDUnlockLogonStruct(WINEVENT_LEVEL_VERBOSE, pUnlockLogon);
+			EIDDebugPrintEIDUnlockLogonStruct(WINEVENT_LEVEL_VERBOSE, pUnlockLogon, pUnlockLogon->Logon.CspDataLength);
 			
 			CStoredCredentialManager* manager = CStoredCredentialManager::Instance();
 			if (!manager)
@@ -968,7 +1048,7 @@ extern "C"
 			
 			// check the PIN if using the base smart card provider to get the remaining pin attempts
 			// put the result in SubStatus
-			Status = CheckPINandGetRemainingAttemptsIfPossible(pSmartCardCspInfo, pPin, SubStatus);
+			Status = CheckPINandGetRemainingAttemptsIfPossible(pSmartCardCspInfo, pUnlockLogon->Logon.CspDataLength, pPin, SubStatus);
 			if (Status != STATUS_SUCCESS)
 			{
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"PIN verification failed");
@@ -1009,7 +1089,7 @@ extern "C"
 				nullptr
 			);
 
-			pCertContext = GetCertificateFromCspInfo(pSmartCardCspInfo);
+			pCertContext = GetCertificateFromCspInfo(pSmartCardCspInfo, pUnlockLogon->Logon.CspDataLength);
 			if (!pCertContext) {
 				EIDSecurityAudit(SECURITY_AUDIT_FAILURE, L"[AUTH_CERT_ERROR] Smart card logon failed: Unable to get certificate from CSP info");
 				// Log certificate read failure
@@ -1135,8 +1215,8 @@ extern "C"
 
 
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"RID = 0x%x", dwRid);
-			PWSTR szPassword = NULL;
-			
+			// szPassword is declared at function scope so the cleanup handler
+			// owns it - see the __finally at the bottom.
 			if (!manager->GetPassword(dwRid,pCertContext, pPin, &szPassword))
 			{
 				DWORD dwError = GetLastError();
@@ -1211,11 +1291,8 @@ extern "C"
 			{
 				(*SupplementalCredentials)->CredentialCount = 0;
 			}
-			if (szPassword)
-			{
-				SecureZeroMemory(szPassword, wcslen(szPassword) * sizeof(WCHAR));
-				EIDFree(szPassword);
-			}
+			// szPassword is wiped and freed by the __finally below, on this path
+			// and on every other exit.
 			Status = STATUS_SUCCESS;
 
 			// Log successful authentication to both ETW and CSV
@@ -1246,14 +1323,28 @@ extern "C"
 			);
 
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Success !!");
+			return Status;
+		}
+		__finally
+		{
+			// Runs on all eighteen exits: normal completion, every `return`,
+			// and unwinding towards the __except below.
 			SecureZeroMemory(pwzPin, sizeof(pwzPin));
 			SecureZeroMemory(pwzPinUncrypted, sizeof(pwzPinUncrypted));
-			return Status;
+			if (szPassword)
+			{
+				// wcslen is safe here: every path that assigns szPassword gets a
+				// NUL-terminated string back from GetPassword().
+				SecureZeroMemory(szPassword, wcslen(szPassword) * sizeof(WCHAR));
+				EIDFree(szPassword);
+				szPassword = NULL;
+			}
+		}
 		}
 		__except(EIDExceptionHandler(GetExceptionInformation()))
 		{
-			SecureZeroMemory(pwzPin, sizeof(pwzPin));
-			SecureZeroMemory(pwzPinUncrypted, sizeof(pwzPinUncrypted));
+			// The inner __finally has already wiped the PIN and password by the
+			// time this runs.
 			EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,L"NT exception in LsaApLogonUserEx2: 0x%08x",GetExceptionCode());
 			EIDLogStackTrace(GetExceptionCode());
 			return STATUS_LOGON_FAILURE;
