@@ -11,14 +11,16 @@ on:
   push:
     branches: [main]
 
-# Scorecard's own guidance: default everything to read, grant per-job below.
-permissions: read-all
+# Default-deny, as in every other workflow; the job grants only what it needs.
+permissions: {}
 
 jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
     permissions:
+      contents: read         # Check out the repository
+      actions: read          # Read workflow runs for the checks Scorecard evaluates
       security-events: write # Upload SARIF to code scanning
       id-token: write        # publish_results signed publication
 
