@@ -5,7 +5,7 @@
 [![VirusTotal Scan](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/scan-artifacts.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/scan-artifacts.yml)
 [![Release Scan](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/release-vt-scan.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/release-vt-scan.yml)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=DangerDawgAU_EIDAuthentication&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=DangerDawgAU_EIDAuthentication)
-[![Aikido Security](https://img.shields.io/badge/Aikido-security-1f6feb)](https://app.aikido.dev/repositories/2594845)
+[![Aikido Security](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FSP00KY-CB%2FOpenAccessEID%2Fbadges%2Faikido-security.json)](https://app.aikido.dev/repositories/2594845)
 [![Aikido Code Quality](https://img.shields.io/badge/Aikido-code%20quality-1f6feb)](https://app.aikido.dev/repositories/2594845)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/SP00KY-CB/OpenAccessEID/badge)](https://scorecard.dev/viewer/?uri=github.com/SP00KY-CB/OpenAccessEID)
 [![License: LGPL-2.1](https://img.shields.io/github/license/SP00KY-CB/OpenAccessEID)](LICENSE)
