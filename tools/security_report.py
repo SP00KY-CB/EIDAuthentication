@@ -413,19 +413,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", "HEAD"))
     parser.add_argument("--out-dir", type=output_dir, default=WORKSPACE,
                         help="directory name for the report, created in the working directory")
-    parser.add_argument("--code-scanning-json", type=workspace_path,
-                        help="read alerts from this file instead of the API (testing)")
-    parser.add_argument("--sonar-json", type=workspace_path,
-                        help="read SonarCloud issues/hotspots from this file instead of the API (testing)")
     return parser.parse_args(argv)
 
 
 def collect(args: argparse.Namespace) -> tuple[list[dict], list[str]]:
     findings: list[dict] = []
     errors: list[str] = []
-    if args.code_scanning_json:
-        findings += normalise_code_scanning(json.loads(args.code_scanning_json.read_text()))
-    elif not os.environ.get("GITHUB_TOKEN"):
+    if not os.environ.get("GITHUB_TOKEN"):
         errors.append("GitHub code scanning: GITHUB_TOKEN is not set")
     else:
         try:
@@ -433,10 +427,7 @@ def collect(args: argparse.Namespace) -> tuple[list[dict], list[str]]:
         except (OSError, ValueError) as exc:  # URLError is an OSError
             errors.append(f"GitHub code scanning: {exc}")
 
-    if args.sonar_json:
-        data = json.loads(args.sonar_json.read_text())
-        findings += normalise_sonar(args.sonar_project, data.get("issues", []), data.get("hotspots", []))
-    elif args.sonar_project:
+    if args.sonar_project:
         try:
             findings += fetch_sonar(args.sonar_project, args.include_code_quality)
         except (OSError, ValueError) as exc:
