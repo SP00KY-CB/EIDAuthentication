@@ -1,0 +1,85 @@
+name: Corgea
+
+# Corgea BLAST (AI SAST, secrets, PII and malicious-dependency checks) over the
+# whole repository. The Corgea GitHub App already scans each pull request;
+# this workflow adds a full scan of main after every push and weekly, so
+# findings in code that no PR touches still reach the Corgea dashboard and
+# the repository's code scanning alerts.
+#
+# Scans are incremental: only files changed since the project's last scan are
+# re-analysed. Findings are reported, not gated; the job fails only if the
+# scan itself cannot run.
+#
+# The CLI is fetched from Corgea's GitHub release at a fixed version and
+# checked against the SHA-256 recorded below (Corgea publishes no checksum
+# file; the hash is of the release asset as downloaded and inspected when it
+# was pinned). To upgrade, bump the version and hash together.
+#
+# Secret: CORGEA_API_KEY, an API token from the Corgea app.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '59 5 * * 2'   # Tuesdays
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: corgea-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  corgea:
+    name: Corgea scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      CORGEA_VERSION: 1.16.1
+      CORGEA_SHA256: 70b423feb984cfd2888574b1fc5867337acc661b423cfbfa9f9923eeef837390
+    steps:
+      - name: Check that the API key is configured
+        env:
+          CORGEA_TOKEN: ${{ secrets.CORGEA_API_KEY }}
+        run: |
+          if [ -z "$CORGEA_TOKEN" ]; then
+            echo "::error::Repository secret CORGEA_API_KEY is not set (Corgea app: create an API token)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          fetch-depth: 0   # incremental scans diff against the last scanned commit
+          persist-credentials: false
+
+      - name: Install the Corgea CLI
+        run: |
+          asset="corgea-v${CORGEA_VERSION}-x86_64-unknown-linux-gnu.zip"
+          curl --proto '=https' --tlsv1.2 -sSfL -o "$RUNNER_TEMP/$asset" "https://github.com/Corgea/cli/releases/download/v${CORGEA_VERSION}/$asset"
+          echo "$CORGEA_SHA256  $RUNNER_TEMP/$asset" | sha256sum -c -
+          unzip -q -o "$RUNNER_TEMP/$asset" corgea -d "$RUNNER_TEMP"
+          "$RUNNER_TEMP/corgea" --version
+
+      - name: Scan the repository
+        env:
+          CORGEA_TOKEN: ${{ secrets.CORGEA_API_KEY }}
+        run: |
+          # Fuzz corpora are binary test inputs; include/ is a vendored Microsoft header.
+          "$RUNNER_TEMP/corgea" scan blast \
+            --exclude 'fuzz/corpus/**,include/**' \
+            --metadata "github_run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --out-format sarif --out-file corgea.sarif
+
+      - name: Upload SARIF
+        if: always() && hashFiles('corgea.sarif') != ''
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4
+        with:
+          sarif_file: corgea.sarif
+          category: corgea
