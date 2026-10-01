@@ -25,14 +25,6 @@
 #include <type_traits>
 #include <utility>
 
-// Detects whether a holder type is reference counted (COM-style AddRef/Release). The credential
-// provider's holder is; the configuration wizard's is not (and never takes the paths that
-// hand an item out of the list lock), so the factory only pins items for the former.
-template <typename U, typename = void>
-struct ContainerHolderHasAddRef : std::false_type {};
-template <typename U>
-struct ContainerHolderHasAddRef<U, std::void_t<decltype(std::declval<U&>().AddRef())>> : std::true_type {};
-
 template <typename T>
 
 class CContainerHolderFactory  // NOSONAR - OWNERSHIP-01: manual Win32 lifetime management

@@ -27,6 +27,17 @@
 #include <LM.h>
 #include <wincred.h>
 
+// Kept here rather than in CContainerHolderFactory.h: Cppcheck parses .h files as C and
+// rejects templates there, and this is the only place the trait is used.
+// Detects whether a holder type is reference counted (COM-style AddRef/Release). The credential
+// provider's holder is; the configuration wizard's is not (and never takes the paths that
+// hand an item out of the list lock), so the factory only pins items for the former.
+template <typename U, typename = void>
+struct ContainerHolderHasAddRef : std::false_type {};
+template <typename U>
+struct ContainerHolderHasAddRef<U, std::void_t<decltype(std::declval<U&>().AddRef())>> : std::true_type {};
+
+
 
 template <typename T>
 CContainerHolderFactory<T>::CContainerHolderFactory()
