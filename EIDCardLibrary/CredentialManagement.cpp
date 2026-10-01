@@ -566,10 +566,13 @@ NTSTATUS CSecurityContext::BuildChallengeMessage(PSecBufferDesc Buffer)
 			__leave;
 		}
 		// get username
-		Status = NetUserEnum(nullptr, 3, 0, (PBYTE*)&pInfo, MAX_PREFERRED_LENGTH, &dwEntriesRead,&dwTotalEntries, nullptr);
-		if (Status != NERR_Success)
+		// NetUserEnum returns a NET_API_STATUS (NERR_* / Win32 code), not an
+		// NTSTATUS: keep it out of Status and map any failure to an SSPI code.
+		const NET_API_STATUS netStatus = NetUserEnum(nullptr, 3, 0, (PBYTE*)&pInfo, MAX_PREFERRED_LENGTH, &dwEntriesRead,&dwTotalEntries, nullptr);
+		if (netStatus != NERR_Success)
 		{
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"NetUserEnum = 0x%08X",Status);
+			Status = SEC_E_INTERNAL_ERROR;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"NetUserEnum = 0x%08X",netStatus);
 			__leave;
 		}
 		for (dwI = 0; dwI < dwEntriesRead; dwI++)
