@@ -67,7 +67,7 @@ HRESULT GetUserInfo(_In_ const std::wstring& wsUsername, _Out_ LocalUserInfo& in
     hr = GetUserSid(wsUsername, wsSid);
     if (SUCCEEDED(hr))
     {
-        info.wsSid = wsSid;
+        info.wsSid = std::move(wsSid);
     }
     else
     {
@@ -218,7 +218,7 @@ HRESULT EnumerateLocalUsers(_Out_ std::vector<LocalUserInfo>& users)
         LocalUserInfo info;
         if (SUCCEEDED(GetUserInfo(pBuf[i].usri0_name, info)))
         {
-            users.push_back(info);
+            users.push_back(std::move(info));
         }
     }
 
