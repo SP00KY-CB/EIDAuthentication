@@ -265,7 +265,7 @@ LPBYTE AllocateAndEncodeObject(LPVOID pvStruct, LPCSTR lpszStructType, LPDWORD p
    // Get Key Usage blob size   
    LPBYTE pbEncodedObject = nullptr;
    BOOL bResult = TRUE;
-   DWORD dwError;
+   DWORD dwError = 0;
 	__try
    {
 	   *pdwSize = 0;	
@@ -303,8 +303,16 @@ LPBYTE AllocateAndEncodeObject(LPVOID pvStruct, LPCSTR lpszStructType, LPDWORD p
    {
 		if (pbEncodedObject && !bResult)
 		{
+			// Freed here, so it must not be returned: the callers free the
+			// returned pointer again in their own cleanup (double free).
 			EIDFree(pbEncodedObject);
+			pbEncodedObject = nullptr;
 		}
+   }
+   if (!pbEncodedObject)
+   {
+		// Callers report GetLastError() when this returns NULL.
+		SetLastError(dwError);
    }
    return pbEncodedObject;
 }
@@ -1457,16 +1465,24 @@ BOOL ImportFileToSmartCard(PTSTR szFileName, PTSTR szPassword, PTSTR szReaderNam
 					// check if MS Base crypto allow the import. If not, enable it
 					HKEY hRegKey;
 					DWORD dwKeyData = 0;
+					DWORD dwKeyDataType = 0;
+					LSTATUS lQueryStatus;
 					dwSize = sizeof(DWORD);
 					if (!RegOpenKeyEx(HKEY_LOCAL_MACHINE, TEXT("SOFTWARE\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Base Smart Card Crypto Provider"),NULL, KEY_READ|KEY_QUERY_VALUE|KEY_WRITE, &hRegKey))  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
 					{
 						if (dwKeySpec == AT_SIGNATURE)
 						{
-							RegQueryValueEx(hRegKey,TEXT("AllowPrivateSignatureKeyImport"),nullptr, nullptr,(PBYTE)&dwKeyData,&dwSize);
+							lQueryStatus = RegQueryValueEx(hRegKey,TEXT("AllowPrivateSignatureKeyImport"),nullptr, &dwKeyDataType,(PBYTE)&dwKeyData,&dwSize);
 						}
 						else
 						{
-							RegQueryValueEx(hRegKey,TEXT("AllowPrivateExchangeKeyImport"),nullptr, nullptr,(PBYTE)&dwKeyData,&dwSize);
+							lQueryStatus = RegQueryValueEx(hRegKey,TEXT("AllowPrivateExchangeKeyImport"),nullptr, &dwKeyDataType,(PBYTE)&dwKeyData,&dwSize);
+						}
+						// A missing, unreadable or non-DWORD value means import is
+						// not enabled (the provider's default).
+						if (lQueryStatus != ERROR_SUCCESS || dwKeyDataType != REG_DWORD || dwSize != sizeof(DWORD))
+						{
+							dwKeyData = 0;
 						}
 						if (!dwKeyData)
 						{
