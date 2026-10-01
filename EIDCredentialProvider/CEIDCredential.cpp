@@ -59,6 +59,7 @@ CEIDCredential::CEIDCredential(CContainer* container):
 	_fSelected = FALSE;  // NOSONAR - INIT-01: member initialized in constructor for clarity/ordering
 	_fDisconnected = FALSE;  // NOSONAR - INIT-01: member initialized in constructor for clarity/ordering
 	_pProvider = nullptr;  // NOSONAR - INIT-01: member initialized in constructor for clarity/ordering
+	InitializeCriticalSection(&_csFields);
 	Initialize();
 }
 
@@ -88,6 +89,13 @@ CEIDCredential::~CEIDCredential()
         CoTaskMemFree(_rgFieldStrings[i]);
         CoTaskMemFree(_rgCredProvFieldDescriptors[i].pszLabel);
     }
+	if (_pCredProvCredentialEvents != nullptr)
+	{
+		// LogonUI normally UnAdvises first; drop any reference still held.
+		_pCredProvCredentialEvents->Release();
+		_pCredProvCredentialEvents = nullptr;
+	}
+	DeleteCriticalSection(&_csFields);
 
     DllRelease();
 	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Deletion");
@@ -151,20 +159,48 @@ CContainer* CEIDCredential::GetContainer() const
 
 BOOL CEIDCredential::IsSelected() const
 {
-	return _fSelected;
+	EnterCriticalSection(&_csFields);
+	BOOL fSelected = _fSelected;
+	LeaveCriticalSection(&_csFields);
+	return fSelected;
 }
 
 BOOL CEIDCredential::IsDisconnected() const
 {
-	return _fDisconnected;
+	EnterCriticalSection(&_csFields);
+	BOOL fDisconnected = _fDisconnected;
+	LeaveCriticalSection(&_csFields);
+	return fDisconnected;
 }
 
 void CEIDCredential::SetProvider(CEIDProvider* pProvider)
 {
+	EnterCriticalSection(&_csFields);
 	_pProvider = pProvider;
+	LeaveCriticalSection(&_csFields);
+}
+
+ICredentialProviderCredentialEvents* CEIDCredential::GetEventsAddRef()
+{
+	EnterCriticalSection(&_csFields);
+	ICredentialProviderCredentialEvents* pEvents = _pCredProvCredentialEvents;
+	if (pEvents != nullptr)
+	{
+		pEvents->AddRef();
+	}
+	LeaveCriticalSection(&_csFields);
+	return pEvents;
+}
+
+// The certificate viewer is a full CryptUI dialog. On the logon / unlock screens LogonUI runs
+// as SYSTEM on the secure desktop, so the link is only offered in the CredUI scenario.
+BOOL CEIDCredential::IsCertificateLinkAllowed() const
+{
+	return _cpus == CPUS_CREDUI;
 }
 
 // Securely wipe and reset the PIN edit buffer (mirrors SetDeselected's handling).
+// Caller must hold _csFields.
 void CEIDCredential::SecureClearPin()
 {
 	if (_rgFieldStrings[SFI_PIN])
@@ -189,19 +225,39 @@ void CEIDCredential::SecureClearPin()
 // update this tile's own fields in place (fDisconnected==TRUE); when the card returns we
 // restore the PIN prompt (fDisconnected==FALSE). GetFieldState/GetStringValue mirror this
 // state so LogonUI stays consistent even if it re-queries the tile.
+//
+// Runs on the smart-card notifier thread. The field strings, the flag and the events pointer
+// are touched under _csFields; the LogonUI callbacks are made on an AddRef'd copy of the
+// events pointer with the lock dropped, so the UI thread waiting on _csFields can never
+// deadlock with LogonUI marshalling one of these calls back to it.
 void CEIDCredential::SetDisconnected(BOOL fDisconnected)
 {
+	EnterCriticalSection(&_csFields);
 	if (_fDisconnected == fDisconnected)
 	{
+		LeaveCriticalSection(&_csFields);
 		return;
 	}
 	_fDisconnected = fDisconnected;
-	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetDisconnected tile=%p fDisconnected=%d advised=%d",(void*)this,fDisconnected,_pCredProvCredentialEvents!=nullptr);
 
 	// Never keep a typed PIN across a card removal.
 	SecureClearPin();
 
-	if (!_pCredProvCredentialEvents)
+	ICredentialProviderCredentialEvents* pEvents = _pCredProvCredentialEvents;
+	PWSTR pwszMessage = nullptr;
+	if (pEvents != nullptr)
+	{
+		pEvents->AddRef();
+		if (!fDisconnected && _rgFieldStrings[SFI_MESSAGE])
+		{
+			// Private copy so the string can be handed to LogonUI outside the lock.
+			SHStrDupW(_rgFieldStrings[SFI_MESSAGE], &pwszMessage);
+		}
+	}
+	LeaveCriticalSection(&_csFields);
+	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetDisconnected tile=%p fDisconnected=%d advised=%d",(void*)this,fDisconnected,pEvents!=nullptr);
+
+	if (!pEvents)
 	{
 		// Not currently advised by LogonUI; the state above is enough for the next query.
 		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetDisconnected tile=%p SKIPPED field updates (not advised)",(void*)this);
@@ -210,33 +266,43 @@ void CEIDCredential::SetDisconnected(BOOL fDisconnected)
 
 	if (fDisconnected)
 	{
-		_pCredProvCredentialEvents->SetFieldState(this, SFI_PIN, CPFS_HIDDEN);
-		_pCredProvCredentialEvents->SetFieldState(this, SFI_SUBMIT_BUTTON, CPFS_HIDDEN);
-		_pCredProvCredentialEvents->SetFieldState(this, SFI_CERTIFICATE, CPFS_HIDDEN);
-		_pCredProvCredentialEvents->SetFieldString(this, SFI_PIN, L"");
-		_pCredProvCredentialEvents->SetFieldString(this, SFI_MESSAGE, s_szReconnectCard);
+		pEvents->SetFieldState(this, SFI_PIN, CPFS_HIDDEN);
+		pEvents->SetFieldState(this, SFI_SUBMIT_BUTTON, CPFS_HIDDEN);
+		pEvents->SetFieldState(this, SFI_CERTIFICATE, CPFS_HIDDEN);
+		pEvents->SetFieldString(this, SFI_PIN, L"");
+		pEvents->SetFieldString(this, SFI_MESSAGE, s_szReconnectCard);
 	}
 	else
 	{
-		_pCredProvCredentialEvents->SetFieldState(this, SFI_PIN, _rgFieldStatePairs[SFI_PIN].cpfs);
-		_pCredProvCredentialEvents->SetFieldState(this, SFI_SUBMIT_BUTTON, _rgFieldStatePairs[SFI_SUBMIT_BUTTON].cpfs);
-		_pCredProvCredentialEvents->SetFieldState(this, SFI_CERTIFICATE, _rgFieldStatePairs[SFI_CERTIFICATE].cpfs);
-		_pCredProvCredentialEvents->SetFieldString(this, SFI_PIN, L"");
-		_pCredProvCredentialEvents->SetFieldString(this, SFI_MESSAGE, _rgFieldStrings[SFI_MESSAGE]);
-		_pCredProvCredentialEvents->SetFieldInteractiveState(this, SFI_PIN, CPFIS_FOCUSED);
+		pEvents->SetFieldState(this, SFI_PIN, _rgFieldStatePairs[SFI_PIN].cpfs);
+		pEvents->SetFieldState(this, SFI_SUBMIT_BUTTON, _rgFieldStatePairs[SFI_SUBMIT_BUTTON].cpfs);
+		pEvents->SetFieldState(this, SFI_CERTIFICATE,
+			IsCertificateLinkAllowed() ? _rgFieldStatePairs[SFI_CERTIFICATE].cpfs : CPFS_HIDDEN);
+		pEvents->SetFieldString(this, SFI_PIN, L"");
+		pEvents->SetFieldString(this, SFI_MESSAGE, pwszMessage ? pwszMessage : L"");
+		pEvents->SetFieldInteractiveState(this, SFI_PIN, CPFIS_FOCUSED);
 	}
+	CoTaskMemFree(pwszMessage);
+	pEvents->Release();
 }
 // LogonUI calls this in order to give us a callback in case we need to notify it of anything.
 HRESULT CEIDCredential::Advise(
     ICredentialProviderCredentialEvents* pcpce
     )
 {
-	if (_pCredProvCredentialEvents != nullptr)
-    {
-        _pCredProvCredentialEvents->Release();
-    }
-    _pCredProvCredentialEvents = pcpce;
-    _pCredProvCredentialEvents->AddRef();
+	// Swap under _csFields (the notifier thread reads it); release the old one outside the lock.
+	if (pcpce != nullptr)
+	{
+		pcpce->AddRef();
+	}
+	EnterCriticalSection(&_csFields);
+	ICredentialProviderCredentialEvents* pOld = _pCredProvCredentialEvents;
+	_pCredProvCredentialEvents = pcpce;
+	LeaveCriticalSection(&_csFields);
+	if (pOld != nullptr)
+	{
+		pOld->Release();
+	}
 	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: Advise tile=%p",(void*)this);
 
     return S_OK;
@@ -251,11 +317,14 @@ void CEIDCredential::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, D
 // LogonUI calls this to tell us to release the callback.
 HRESULT CEIDCredential::UnAdvise()
 {
-	if (_pCredProvCredentialEvents != nullptr)
-    {
-        _pCredProvCredentialEvents->Release();
-    }
-    _pCredProvCredentialEvents = nullptr;
+	EnterCriticalSection(&_csFields);
+	ICredentialProviderCredentialEvents* pOld = _pCredProvCredentialEvents;
+	_pCredProvCredentialEvents = nullptr;
+	LeaveCriticalSection(&_csFields);
+	if (pOld != nullptr)
+	{
+		pOld->Release();
+	}
 	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: UnAdvise tile=%p",(void*)this);
     return S_OK;
 }
@@ -269,7 +338,9 @@ HRESULT CEIDCredential::UnAdvise()
 HRESULT CEIDCredential::SetSelected(BOOL* pbAutoLogon)
 {
 	*pbAutoLogon = FALSE;
+	EnterCriticalSection(&_csFields);
 	_fSelected = TRUE;
+	LeaveCriticalSection(&_csFields);
 	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetSelected tile=%p",(void*)this);
     return S_OK;
 }
@@ -280,8 +351,9 @@ HRESULT CEIDCredential::SetSelected(BOOL* pbAutoLogon)
 HRESULT CEIDCredential::SetDeselected()
 {
     HRESULT hr = S_OK;  // NOSONAR - EXPLICIT-TYPE-03: HRESULT visible for security audit
+	BOOL fClearedPin = FALSE;
+	EnterCriticalSection(&_csFields);
 	_fSelected = FALSE;
-	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetDeselected tile=%p",(void*)this);
 	if (_rgFieldStrings[SFI_PIN])
     {
         // CoTaskMemFree (below) deals with NULL, but StringCchLength does not.
@@ -290,17 +362,28 @@ HRESULT CEIDCredential::SetDeselected()
         if (SUCCEEDED(hr))
         {
             SecureZeroMemory(_rgFieldStrings[SFI_PIN], lenPin * sizeof(*_rgFieldStrings[SFI_PIN]));
-        
+
             CoTaskMemFree(_rgFieldStrings[SFI_PIN]);
+            _rgFieldStrings[SFI_PIN] = nullptr;
             hr = SHStrDupW(L"", &_rgFieldStrings[SFI_PIN]);
         }
-
-        if (SUCCEEDED(hr) && _pCredProvCredentialEvents)
-        {
-            _pCredProvCredentialEvents->SetFieldString(this, SFI_PIN, _rgFieldStrings[SFI_PIN]);
-			EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"");
-        }
+        fClearedPin = SUCCEEDED(hr);
     }
+	const BOOL fDisconnected = _fDisconnected;
+	CEIDProvider* pProvider = _pProvider;
+	LeaveCriticalSection(&_csFields);
+	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetDeselected tile=%p",(void*)this);
+
+	if (fClearedPin)
+	{
+		// Call into LogonUI with _csFields dropped.
+		if (ICredentialProviderCredentialEvents* pEvents = GetEventsAddRef())
+		{
+			pEvents->SetFieldString(this, SFI_PIN, L"");
+			pEvents->Release();
+			EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"");
+		}
+	}
 	if (!SUCCEEDED(hr))
 	{
 		EIDLogErrorWithContext("SetDeselected", hr, L"field=SFI_PIN");
@@ -313,10 +396,10 @@ HRESULT CEIDCredential::SetDeselected()
 	// re-enters LogonUI via CredentialsChanged and releases the list's reference to us, so we
 	// must not touch any member after it (LogonUI's own reference keeps `this` alive until the
 	// call returns).
-	if (_fDisconnected && _pProvider)
+	if (fDisconnected && pProvider)
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetDeselected while disconnected -> request purge tile=%p",(void*)this);
-		_pProvider->RemoveDisconnectedTile(this);
+		pProvider->RemoveDisconnectedTile(this);
 	}
 
     return hr;
@@ -337,8 +420,14 @@ HRESULT CEIDCredential::GetFieldState(
         *pcpfs = _rgFieldStatePairs[dwFieldID].cpfs;
         // While the card is absent, hide the PIN entry, submit button and certificate link so
         // only the "please reconnect" message remains. Keeps LogonUI consistent if it re-queries.
-        if (_fDisconnected &&
+        if (IsDisconnected() &&
             (dwFieldID == SFI_PIN || dwFieldID == SFI_SUBMIT_BUTTON || dwFieldID == SFI_CERTIFICATE))
+        {
+            *pcpfs = CPFS_HIDDEN;
+        }
+        // The certificate viewer must not be reachable from the logon / unlock screens
+        // (SYSTEM on the secure desktop); only CredUI shows the link.
+        if (dwFieldID == SFI_CERTIFICATE && !IsCertificateLinkAllowed())
         {
             *pcpfs = CPFS_HIDDEN;
         }
@@ -368,6 +457,7 @@ HRESULT CEIDCredential::GetStringValue(
     {
         // Make a copy of the string and return that. The caller
         // is responsible for freeing it.
+        EnterCriticalSection(&_csFields);
         if (_fDisconnected && dwFieldID == SFI_MESSAGE)
         {
             hr = SHStrDupW(s_szReconnectCard, ppwsz);
@@ -376,6 +466,7 @@ HRESULT CEIDCredential::GetStringValue(
         {
             hr = SHStrDupW(_rgFieldStrings[dwFieldID], ppwsz);
         }
+        LeaveCriticalSection(&_csFields);
     }
     else
     {
@@ -494,6 +585,7 @@ HRESULT CEIDCredential::SetStringValue(
        (CPFT_EDIT_TEXT == _rgCredProvFieldDescriptors[dwFieldID].cpft || 
         CPFT_PASSWORD_TEXT == _rgCredProvFieldDescriptors[dwFieldID].cpft)) 
     {
+        EnterCriticalSection(&_csFields);
         PWSTR* ppwszStored = &_rgFieldStrings[dwFieldID];
         // Wipe before releasing. LogonUI calls this on EVERY KEYSTROKE, and it
         // frees the previous value - so without this, typing an N-character PIN
@@ -513,8 +605,10 @@ HRESULT CEIDCredential::SetStringValue(
             }
         }
         CoTaskMemFree(*ppwszStored);
+        *ppwszStored = nullptr;
 
-  hr = SHStrDupW(pwz, ppwszStored);
+        hr = SHStrDupW(pwz, ppwszStored);
+        LeaveCriticalSection(&_csFields);
     }
     else
     {
@@ -596,12 +690,21 @@ HRESULT CEIDCredential::CommandLinkClicked(DWORD dwFieldID)
 	if (dwFieldID < ARRAYSIZE(_rgCredProvFieldDescriptors) && 
        (CPFT_COMMAND_LINK == _rgCredProvFieldDescriptors[dwFieldID].cpft)) 
     {
-		if (_pCredProvCredentialEvents)
+		if (!IsCertificateLinkAllowed())
 		{
-			HWND hWnd;
+			// The link is hidden outside CredUI; refuse it even if LogonUI invokes it anyway.
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Certificate viewer refused in scenario %d",_cpus);
+		}
+		else if (ICredentialProviderCredentialEvents* pEvents = GetEventsAddRef())
+		{
+			// The viewer is modal: run it with _csFields dropped.
+			HWND hWnd = nullptr;
 			EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"");
-			_pCredProvCredentialEvents->OnCreatingWindow(&hWnd);
-			_pContainer->ViewCertificate(hWnd);  
+			if (SUCCEEDED(pEvents->OnCreatingWindow(&hWnd)))
+			{
+				_pContainer->ViewCertificate(hWnd);
+			}
+			pEvents->Release();
 		}
 		hr = S_OK;
 	}
@@ -713,7 +816,11 @@ HRESULT CEIDCredential::GetSerialization(
     }
 
     PWSTR pwzProtectedPin = nullptr;
+    // Copy the PIN under _csFields: a card removal on the notifier thread may wipe and
+    // reallocate it concurrently.
+    EnterCriticalSection(&_csFields);
     hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PIN], _cpus, _dwFlags, &pwzProtectedPin);
+    LeaveCriticalSection(&_csFields);
 
     // Guard clause: password protection failed
     if (FAILED(hr))
@@ -836,7 +943,9 @@ HRESULT CEIDCredential::ReportResult(
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon
     )
 {
-    if (ppwszOptionalStatusText) *ppwszOptionalStatusText = s_wszUnknownError;
+    // NULL is a valid "no text" value. LogonUI CoTaskMemFree()s any other value, so it must
+    // never be pointed at static storage.
+    if (ppwszOptionalStatusText) *ppwszOptionalStatusText = nullptr;
     if (pcpsiOptionalStatusIcon) *pcpsiOptionalStatusIcon = CPSI_NONE;
 	
 	if (ntsStatus == STATUS_SUCCESS)
@@ -888,7 +997,15 @@ HRESULT CEIDCredential::ReportResult(
 			Error = (PWSTR) CoTaskMemAlloc(dwLen * sizeof(WCHAR));
 			if (Error)
 			{
-				FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM,nullptr,LsaNtStatusToWinError(ntsStatus),0,Error,dwLen,nullptr);
+				Error[0] = L'\0';
+				if (!FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,nullptr,LsaNtStatusToWinError(ntsStatus),0,Error,dwLen,nullptr))
+				{
+					// No system text for this status: never show the unwritten buffer, fall
+					// back to a generic message (or NULL, which is also valid, if that fails).
+					CoTaskMemFree(Error);
+					Error = nullptr;
+					SHStrDupW(s_wszUnknownError, &Error);
+				}
 			}
 			*ppwszOptionalStatusText = Error;
 		}
@@ -898,10 +1015,13 @@ HRESULT CEIDCredential::ReportResult(
     {
         // Zeroize the internal PIN buffer, not just the visible UI field, so the typed
         // PIN does not linger in memory after a failed logon.
+        EnterCriticalSection(&_csFields);
         SecureClearPin();
-        if (_pCredProvCredentialEvents)  // NOSONAR - CONTROL-01: nested if kept for cleanup clarity
+        LeaveCriticalSection(&_csFields);
+        if (ICredentialProviderCredentialEvents* pEvents = GetEventsAddRef())  // NOSONAR - CONTROL-01: nested if kept for cleanup clarity
         {
-            _pCredProvCredentialEvents->SetFieldString(this, SFI_PIN, L"");
+            pEvents->SetFieldString(this, SFI_PIN, L"");
+            pEvents->Release();
         }
     }
 

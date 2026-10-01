@@ -43,6 +43,32 @@ void CContainerHolderFactory<T>::SetReviveOnReconnect(BOOL fRevive)
 	_fReviveOnReconnect = fRevive;
 }
 
+template <typename T>
+void CContainerHolderFactory<T>::PinItem(T* item)
+{
+	if constexpr (ContainerHolderHasAddRef<T>::value)
+	{
+		item->AddRef();
+	}
+	else
+	{
+		UNREFERENCED_PARAMETER(item);
+	}
+}
+
+template <typename T>
+void CContainerHolderFactory<T>::UnpinItem(T* item)
+{
+	if constexpr (ContainerHolderHasAddRef<T>::value)
+	{
+		item->Release();
+	}
+	else
+	{
+		UNREFERENCED_PARAMETER(item);
+	}
+}
+
 template <typename T> 
 CContainerHolderFactory<T>::~CContainerHolderFactory()
 {
@@ -106,6 +132,14 @@ BOOL CContainerHolderFactory<T>::ConnectNotificationGeneric(__in LPCTSTR szReade
 	// get provider name
 	if (!SchGetProviderNameFromCardName(szCardName, szProviderName, &dwProviderNameLen))
 	{
+		return FALSE;
+	}
+	// The provider comes from the card's ATR mapping. Apply the same CSP allow-list (and its
+	// EnforceCSPWhitelist policy) as the LSA side before CryptAcquireContext loads the CSP
+	// DLL into this process (LogonUI runs as SYSTEM).
+	if (!IsAllowedCSPProvider(szProviderName))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CSP provider '%s' not allowed - card ignored",szProviderName);
 		return FALSE;
 	}
 
@@ -252,10 +286,28 @@ BOOL CContainerHolderFactory<T>::CreateContainer(__in LPCTSTR szReaderName,__in 
 															   __in LPCTSTR szProviderName, __in LPCTSTR szWideContainerName,
 															   __in DWORD KeySpec, __in USHORT ActivityCount, __in PCCERT_CONTEXT pCertContext)
 {
+	// nothrow: this runs on the smart-card notifier thread inside LogonUI, where an escaping
+	// std::bad_alloc would take the process down. On failure the caller still owns (and frees)
+	// pCertContext.
 	CContainer* pContainer = nullptr;
-	pContainer = new CContainer(szReaderName,szCardName,szProviderName,szWideContainerName, KeySpec, ActivityCount, pCertContext);  // NOSONAR - COM-01: Container requires heap allocation
+	pContainer = new (std::nothrow) CContainer(szReaderName,szCardName,szProviderName,szWideContainerName, KeySpec, ActivityCount, pCertContext);  // NOSONAR - COM-01: Container requires heap allocation
+	if (!pContainer)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Out of memory (CContainer)");
+		return FALSE;
+	}
 	this->Lock();
-	T* ContainerHolder = new T(pContainer);  // NOSONAR - COM-01: Container holder requires heap allocation
+	T* ContainerHolder = new (std::nothrow) T(pContainer);  // NOSONAR - COM-01: Container holder requires heap allocation
+	if (!ContainerHolder)
+	{
+		this->Unlock();
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Out of memory (container holder)");
+		// ~CContainer frees the certificate context it was given, but the caller frees it too on
+		// failure: hand the container its own reference so the caller's stays valid.
+		CertDuplicateCertificateContext(pCertContext);
+		delete pContainer;  // NOSONAR - OWNERSHIP-01: manual Win32 lifetime management
+		return FALSE;
+	}
 	ContainerHolder->SetUsageScenario(_cpus, _dwFlags);
 	_CredentialList.push_back(ContainerHolder);
 	this->Unlock();
@@ -279,6 +331,12 @@ BOOL CContainerHolderFactory<T>::CreateItemFromCertificateBlob(__in HCRYPTPROV h
 	// flagged disconnected (its card was removed while selected), just clear the flag so the
 	// existing, on-screen tile comes back to life. This avoids creating a duplicate tile and
 	// lets LogonUI's currently selected tile switch back from "please reconnect" to the PIN box.
+	//
+	// Reader, key spec and container name are chosen by whoever made the card, so they do not
+	// identify it: a different card using the same container name must NOT inherit the tile
+	// (and the PIN typed into it). Only revive when the certificate on the card is byte-for-byte
+	// the one the tile was built from; otherwise fall through and create a new tile normally -
+	// the old one stays flagged disconnected and is dropped by PurgeStaleDisconnected.
 	if (_fReviveOnReconnect)
 	{
 		T* reviveItem = nullptr;
@@ -291,7 +349,22 @@ BOOL CContainerHolderFactory<T>::CreateItemFromCertificateBlob(__in HCRYPTPROV h
 				container->GetKeySpec() == KeySpec &&
 				_tcscmp(container->GetContainerName(), szWideContainerName) == 0)
 			{
+				BOOL fSameCertificate = FALSE;
+				if (PCCERT_CONTEXT pOldCert = container->GetCertificate())
+				{
+					fSameCertificate = (Data != nullptr &&
+						pOldCert->cbCertEncoded == DataSize &&
+						memcmp(pOldCert->pbCertEncoded, Data, DataSize) == 0);
+					CertFreeCertificateContext(pOldCert);
+				}
+				if (!fSameCertificate)
+				{
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Not reviving tile %s: certificate on the card differs", szWideContainerName);
+					continue;
+				}
 				reviveItem = item;
+				// Keep it alive once the lock is dropped (a concurrent deselect may purge it).
+				PinItem(reviveItem);
 				break;
 			}
 		}
@@ -302,6 +375,7 @@ BOOL CContainerHolderFactory<T>::CreateItemFromCertificateBlob(__in HCRYPTPROV h
 			// post-connect PurgeStaleDisconnected, so the revived tile will not be purged.
 			reviveItem->SetDisconnected(FALSE);
 			EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Revived disconnected tile %s", szWideContainerName);
+			UnpinItem(reviveItem);
 			return TRUE;
 		}
 	}
@@ -331,6 +405,9 @@ BOOL CContainerHolderFactory<T>::CreateItemFromCertificateBlob(__in HCRYPTPROV h
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CryptContextAddRef 0x%08x",dwError);
 			__leave;
 		}
+		// Only report success (and so keep pCertContext alive) once a container owns it; every
+		// rejection below must let __finally free the certificate (and the hProv reference).
+		fReturn = FALSE;
 
 		if (_cpus != CPUS_CREDUI && _cpus != CPUS_INVALID)
 		{
@@ -447,6 +524,7 @@ BOOL CContainerHolderFactory<T>::DisconnectNotification(LPCTSTR szReaderName)
 				if (_fReviveOnReconnect && item->IsSelected())  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
 				{
 					EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: Disconnect -> MORPH tile=%p",(void*)item);
+					PinItem(item);  // used after the lock is dropped
 					morphItems.push_back(item);
 					++l_iter;
 				}
@@ -466,11 +544,12 @@ BOOL CContainerHolderFactory<T>::DisconnectNotification(LPCTSTR szReaderName)
 	}
 	this->Unlock();
 
-	// The kept tiles stay owned by _CredentialList and card events are delivered serially,
-	// so they cannot be erased from under us here.
+	// The kept tiles were pinned under the lock, so they stay alive here even if the UI thread
+	// erases them from _CredentialList concurrently.
 	for (T* item : morphItems)
 	{
 		item->SetDisconnected(TRUE);
+		UnpinItem(item);
 	}
 	return TRUE;
 }

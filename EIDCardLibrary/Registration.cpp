@@ -317,9 +317,12 @@ void EIDCredentialProviderDllRegister()
 	RegSetKeyValue(	HKEY_CLASSES_ROOT, 
 		L"CLSID\\{B4866A0A-DB08-4835-A26F-414B46F3244C}", 
 		nullptr, REG_SZ, L"EidCredentialProvider",sizeof(L"EidCredentialProvider"));
-	RegSetKeyValue(	HKEY_CLASSES_ROOT, 
+	// Absolute path: a bare DLL name is resolved through the loading process's DLL search
+	// path, so a CredUI host started from a writable directory could load a planted copy.
+	// The installer copies the DLL to System32.
+	RegSetKeyValue(	HKEY_CLASSES_ROOT,
 		L"CLSID\\{B4866A0A-DB08-4835-A26F-414B46F3244C}\\InprocServer32",
-		nullptr, REG_SZ, L"EidCredentialProvider.dll",sizeof(L"EidCredentialProvider.dll"));
+		nullptr, REG_EXPAND_SZ, L"%SystemRoot%\\System32\\EIDCredentialProvider.dll",sizeof(L"%SystemRoot%\\System32\\EIDCredentialProvider.dll"));
 	RegSetKeyValue(	HKEY_CLASSES_ROOT, 
 		L"CLSID\\{B4866A0A-DB08-4835-A26F-414B46F3244C}\\InprocServer32",
 		L"ThreadingModel",REG_SZ, L"Apartment",sizeof(L"Apartment"));

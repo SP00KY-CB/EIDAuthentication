@@ -21,8 +21,19 @@
 #include <wincrypt.h>
 #include <credentialprovider.h>
 #include <list>
+#include <new>
+#include <type_traits>
+#include <utility>
 
-template <typename T> 
+// Detects whether a holder type is reference counted (COM-style AddRef/Release). The credential
+// provider's holder is; the configuration wizard's is not (and never takes the paths that
+// hand an item out of the list lock), so the factory only pins items for the former.
+template <typename U, typename = void>
+struct ContainerHolderHasAddRef : std::false_type {};
+template <typename U>
+struct ContainerHolderHasAddRef<U, std::void_t<decltype(std::declval<U&>().AddRef())>> : std::true_type {};
+
+template <typename T>
 
 class CContainerHolderFactory  // NOSONAR - OWNERSHIP-01: manual Win32 lifetime management
 {
@@ -61,6 +72,10 @@ private:
 	// (their container was not present on the re-inserted card - i.e. a different card).
 	void PurgeStaleDisconnected(__in LPCTSTR szReaderName);
 	BOOL CleanList();
+	// Pin / unpin an item that is used after the list lock is dropped (no-op for holders
+	// without AddRef). PinItem must be called with the list lock held.
+	static void PinItem(T* item);
+	static void UnpinItem(T* item);
 	CREDENTIAL_PROVIDER_USAGE_SCENARIO _cpus;
     DWORD _dwFlags;
 	std::list<T*> _CredentialList;
