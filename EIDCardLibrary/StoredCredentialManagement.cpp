@@ -42,6 +42,7 @@
 #include <string>
 #include <span>
 #include <array>
+#include <climits>
 
 constexpr LPCTSTR CREDENTIALPROVIDER = MS_ENH_RSA_AES_PROV;
 constexpr DWORD CREDENTIALKEYLENGTH = 256;
@@ -110,23 +111,33 @@ static void EIDFreePrivateData(__in_opt PEID_PRIVATE_DATA pPrivateData, __in DWO
 namespace {
 
 // Calculate the total size needed for EID_PRIVATE_DATA buffer
-// Returns the total allocation size in bytes
+// Returns the total allocation size in bytes, or 0 when the layout cannot be
+// represented: every offset/size in EID_PRIVATE_DATA is a USHORT, and the blob
+// size itself is passed around as a USHORT, so the sum is computed in size_t and
+// refused (rather than silently wrapped) when it exceeds USHRT_MAX. A wrapped
+// size here used to give a small allocation that BuildSecretData then overran
+// with the full certificate - a heap overflow inside LSASS.
 // Complexity reduction helper for CreateCredential (Phase 36-01)
 USHORT CalculateSecretSize(bool fEncryptPassword, USHORT usEncryptedPasswordSize,
                            USHORT usSymmetricKeySize, DWORD cbCertEncoded) noexcept
 {
+    if (cbCertEncoded > USHRT_MAX)
+    {
+        return 0;
+    }
+    size_t cbTotal = sizeof(EID_PRIVATE_DATA) + static_cast<size_t>(usEncryptedPasswordSize) +
+                     static_cast<size_t>(cbCertEncoded);
     if (fEncryptPassword)
     {
         // Certificate-based encryption: cert + symmetric key + encrypted password
-        return static_cast<USHORT>(sizeof(EID_PRIVATE_DATA) + usEncryptedPasswordSize +
-                                   usSymmetricKeySize + static_cast<USHORT>(cbCertEncoded));
+        cbTotal += static_cast<size_t>(usSymmetricKeySize);
     }
-    else
+    // DPAPI encryption: cert + encrypted data (no symmetric key)
+    if (cbTotal > USHRT_MAX)
     {
-        // DPAPI encryption: cert + encrypted data (no symmetric key)
-        return static_cast<USHORT>(sizeof(EID_PRIVATE_DATA) + usEncryptedPasswordSize +
-                                   static_cast<USHORT>(cbCertEncoded));
+        return 0;
     }
+    return static_cast<USHORT>(cbTotal);
 }
 
 // Build the secret data buffer with certificate and encrypted password data
@@ -190,6 +201,16 @@ BOOL EncryptPasswordWithDPAPI(__in PWSTR szPassword, __in USHORT usPasswordSize,
                           CRYPTPROTECT_LOCAL_MACHINE, &DataOut))
     {
         EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"CryptProtectData failed 0x%08x", GetLastError());
+        return FALSE;
+    }
+
+    // The encrypted size is stored as a USHORT; refuse rather than truncate.
+    if (DataOut.cbData > USHRT_MAX)
+    {
+        EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"CryptProtectData output too large (%u bytes)", DataOut.cbData);
+        SecureZeroMemory(DataOut.pbData, DataOut.cbData);
+        LocalFree(DataOut.pbData);
+        SetLastError(ERROR_ARITHMETIC_OVERFLOW);
         return FALSE;
     }
 
@@ -482,7 +503,7 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 	PBYTE pEncryptedPassword = nullptr;
 	USHORT usEncryptedPasswordSize = 0;
 	PEID_PRIVATE_DATA pbSecret = nullptr;
-	USHORT usSecretSize;
+	USHORT usSecretSize = 0;
 	USHORT usPasswordSize;
 	HCRYPTPROV hProv = NULL;  // NOSONAR - HANDLE-01: HCRYPTPROV is ULONG_PTR, not pointer type
 	PBYTE pbPublicKey = nullptr;
@@ -497,6 +518,15 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 		{
 			dwError = ERROR_NONE_MAPPED;
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"dwRid 0x%08x", dwError);
+			__leave;
+		}
+
+		// Refuse an oversized certificate up front: the stored blob uses USHORT
+		// offsets/sizes, and a smart card logon certificate is a few KB.
+		if (!pCertContext || pCertContext->cbCertEncoded > EID_MAX_CERTIFICATE_SIZE)
+		{
+			dwError = ERROR_INVALID_PARAMETER;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"certificate missing or too large (max %u bytes)", EID_MAX_CERTIFICATE_SIZE);
 			__leave;
 		}
 
@@ -519,7 +549,14 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 		}
 		else if (szPassword != nullptr)  // STRPTR-01: Validate pointer before wcslen
 		{
-			usPasswordSize = static_cast<USHORT>(wcslen(szPassword) * sizeof(WCHAR));
+			const size_t cchPassword = wcslen(szPassword);
+			if (cchPassword > USHRT_MAX / sizeof(WCHAR))
+			{
+				dwError = ERROR_INVALID_PARAMETER;
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"password too long");
+				__leave;
+			}
+			usPasswordSize = static_cast<USHORT>(cchPassword * sizeof(WCHAR));
 		}
 		else
 		{
@@ -614,6 +651,12 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 
 			// Calculate buffer size using helper
 			usSecretSize = CalculateSecretSize(true, usEncryptedPasswordSize, usSymetricKeySize, static_cast<ULONG>(pCertContext->cbCertEncoded));
+			if (!usSecretSize)
+			{
+				dwError = ERROR_ARITHMETIC_OVERFLOW;
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"secret size overflow (cert %u bytes)", pCertContext->cbCertEncoded);
+				__leave;
+			}
 			pbSecret = static_cast<PEID_PRIVATE_DATA>(EIDAlloc(usSecretSize));
 			if (!pbSecret)
 			{
@@ -640,6 +683,12 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 
 			// Calculate buffer size using helper
 			usSecretSize = CalculateSecretSize(false, usEncryptedPasswordSize, 0, static_cast<ULONG>(pCertContext->cbCertEncoded));
+			if (!usSecretSize)
+			{
+				dwError = ERROR_ARITHMETIC_OVERFLOW;
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"secret size overflow (cert %u bytes)", pCertContext->cbCertEncoded);
+				__leave;
+			}
 			pbSecret = static_cast<PEID_PRIVATE_DATA>(EIDAlloc(usSecretSize));
 			if (!pbSecret)
 			{
@@ -1515,6 +1564,12 @@ BOOL CStoredCredentialManager::GenerateSymetricKeyAndEncryptIt(__in HCRYPTPROV h
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CryptEncrypt 0x%08x",GetLastError());
 			__leave;
 		}
+		if (dwSize > USHRT_MAX)
+		{
+			dwError = ERROR_ARITHMETIC_OVERFLOW;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"encrypted key size overflow (%u)",dwSize);
+			__leave;
+		}
 		*usSize = (USHORT) dwSize;
 		// bKey is know encrypted
 		
@@ -1643,7 +1698,15 @@ BOOL CStoredCredentialManager::EncryptPasswordAndSaveIt(__in HCRYPTKEY hKey, __i
 				__leave;
 			}
 		}
-		*usSize = (USHORT) ((dwRoundNumber -1 ) * dwBlockLen + dwEncryptedSize);
+		// The size is stored as a USHORT in EID_PRIVATE_DATA; refuse instead of truncating.
+		const DWORD cbEncryptedTotal = (dwRoundNumber -1 ) * dwBlockLen + dwEncryptedSize;
+		if (cbEncryptedTotal > USHRT_MAX)
+		{
+			dwError = ERROR_ARITHMETIC_OVERFLOW;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"encrypted password size overflow (%u)",cbEncryptedTotal);
+			__leave;
+		}
+		*usSize = (USHORT) cbEncryptedTotal;
 		// szPassword is know encrypted
 
 		fReturn = TRUE;

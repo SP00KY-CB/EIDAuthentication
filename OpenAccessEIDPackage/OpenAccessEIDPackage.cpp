@@ -457,6 +457,15 @@ extern "C"
 					break;
 				}
 				pBuffer->pbCertificate = pPointer;
+				// SECURITY: the stored-credential blob uses USHORT offsets/sizes; an oversized
+				// certificate used to wrap the secret size and overflow the LSASS heap.
+				if (static_cast<DWORD>(pBuffer->dwCertificateSize) > EID_MAX_CERTIFICATE_SIZE)
+				{
+					pBuffer->dwError = ERROR_INVALID_PARAMETER;
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"pbCertificate too large (0x%x bytes) - rejecting", pBuffer->dwCertificateSize);
+					EIDSecurityAudit(SECURITY_AUDIT_WARNING, L"[IPC_REJECT] Rejected oversized certificate (0x%x bytes) in untrusted call-package (rid 0x%x)", pBuffer->dwCertificateSize, pBuffer->dwRid);
+					break;
+				}
 				pCertContext = CertCreateCertificateContext(X509_ASN_ENCODING, pBuffer->pbCertificate, pBuffer->dwCertificateSize);
 				if (!pCertContext)
 				{

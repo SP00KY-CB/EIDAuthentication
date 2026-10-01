@@ -876,7 +876,8 @@ HRESULT CEIDCredential::ReportResult(
 				LoadStringW(Handle, 4001, Message, ARRAYSIZE(Message));
 				FreeLibrary(Handle);
 			}
-			swprintf_s(MessageFormatted,ARRAYSIZE(MessageFormatted), Message, ntsSubstatus);
+			// Message is a localized resource string from a system DLL used as a format; truncate rather than fast-fail.
+			_snwprintf_s(MessageFormatted,ARRAYSIZE(MessageFormatted),_TRUNCATE, Message, ntsSubstatus);
 			SHStrDupW(MessageFormatted, ppwszOptionalStatusText);
 		}
 		else
