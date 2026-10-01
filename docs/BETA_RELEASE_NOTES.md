@@ -18,7 +18,7 @@ The installer and all shipped DLLs/EXEs are **not Authenticode-signed**. As a re
     `C:\Program Files\EID Authentication\tools\Disable-LsaProtection.ps1`
     (Start Menu -> EID Authentication -> **Disable LSA Protection (manual)**). The script self-elevates, shows a warning page, requires a typed confirmation, and backs up the prior state.
   - Option B: request a signed build by opening an issue at
-    https://github.com/DangerDawgAU/EIDAuthentication/issues
+    https://github.com/SP00KY-CB/OpenAccessEID/issues
 
 > **Security trade-off:** Disabling LSA Protection removes a major defence against credential theft from LSASS (e.g., Mimikatz-class attacks). Only do this on a test machine that is not used for day-to-day work and does not hold real credentials. Re-enable it (`-Restore`) when testing is complete.
 
@@ -103,7 +103,7 @@ Attempting to use the credential provider for a domain or cloud account will eit
 
 Please file beta feedback (crashes, unexpected authentication outcomes, policy conflicts, installer failures) at:
 
-> https://github.com/DangerDawgAU/EIDAuthentication/issues
+> https://github.com/SP00KY-CB/OpenAccessEID/issues
 
 When reporting, include:
 
