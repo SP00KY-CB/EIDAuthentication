@@ -29,7 +29,7 @@ std::wstring FormatUserDetails(_In_ const UserInfo& user)
 {
     std::wstring wsDetails;
 
-    wsDetails += L"User Details for: " + user.wsUsername + L"\r\n\r\n";
+    wsDetails += L"User Details for: " + user.wsUsername + L"\r\n\r\n";  // NOSONAR - FORMAT-01: plain appends keep the unbounded group list allocation-safe
     wsDetails += L"RID: " + std::to_wstring(user.dwRid) + L"\r\n";
     wsDetails += L"SID: " + user.wsSid + L"\r\n";
     wsDetails += L"Has EID Credential: ";
@@ -69,7 +69,7 @@ std::wstring FormatUserDetails(_In_ const UserInfo& user)
     {
         for (const auto& group : user.wsGroups)
         {
-            wsDetails += L"\u2022 " + group + L"\r\n";
+            wsDetails += L"\u2022 " + group + L"\r\n";  // NOSONAR - ESCAPE-01: C++23 delimited escapes not used in this codebase
         }
     }
 

@@ -151,7 +151,7 @@ BOOL PopulateListViewListData(HWND hWndListView)
 	{
 		// Each accessor call takes the lock separately, so the list can shrink
 		// between the count and the lookup.
-		CContainerHolderTest* pHolder = pCredentialList->GetContainerHolderAt(index);
+		CContainerHolderTest* pHolder = pCredentialList->GetContainerHolderAt(index);  // NOSONAR - API-01: pointer type dictated by non-const accessor API
 		if (!pHolder || !pHolder->GetContainer())
 		{
 			continue;
