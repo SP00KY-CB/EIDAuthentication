@@ -87,6 +87,12 @@
   ; then finishes the migration and warns about orphaned Group Policy.
   Var /GLOBAL MigratedFromLegacy
 
+  ; 1 when the uninstaller of the version being replaced deleted every user's
+  ; stored credential (v2.0.00 and earlier, when its unregistration step could
+  ; not be swapped for this version's - see NeutraliseOldUnregister). The Core
+  ; section then tells the operator that users must re-enrol.
+  Var /GLOBAL EnrolmentsWiped
+
 ;--------------------------------
 ;Uninstaller Variables
 
@@ -127,7 +133,7 @@ Section "Core" SecCore
         Call IsEIDDataTreeTrusted
         Pop $R0
         ${If} $R0 != 1
-          DetailPrint "WARNING: C:\ProgramData\EIDAuthentication is a junction, or it or something in it is not owned by SYSTEM/Administrators; not moved. Existing logs remain there."
+          DetailPrint "WARNING: C:\ProgramData\EIDAuthentication is a junction, or it or something in it is not owned by SYSTEM/Administrators or can be modified by other users, or it could not be checked; not moved. Existing logs remain there."
         ${Else}
           ClearErrors
           Rename "C:\ProgramData\EIDAuthentication" "C:\ProgramData\OpenAccessEID"
@@ -157,7 +163,44 @@ Section "Core" SecCore
   DetailPrint "Securing C:\ProgramData\OpenAccessEID..."
   Call SecureEIDDataDir
 
-  ; Create installation directory
+  ; Create installation directory and lock it down before anything is put in it.
+  ; EIDTraceConsumer.exe runs from here as SYSTEM and the System32 DLLs are
+  ; copied from here, and /D= can point $INSTDIR anywhere - including a folder a
+  ; standard user can write to. So whatever the path, give it the Program Files
+  ; treatment: owner Administrators, inheritance removed, Full control for
+  ; SYSTEM and Administrators, read/execute for Users. A junction, or a folder
+  ; that already holds something a standard user owns or can modify, is refused.
+  CreateDirectory "$INSTDIR"
+  Push "$INSTDIR"
+  Call IsReparsePoint
+  Pop $R0
+  ${If} $R0 == 1
+    Push "ERROR: the installation folder $INSTDIR is a junction or symbolic link. Installation stopped; choose another folder."
+    Call InstallLog
+    MessageBox MB_OK|MB_ICONSTOP "The installation folder$\n$INSTDIR$\nis a junction or symbolic link. OpenAccess EID runs a SYSTEM service from this folder, so it will not install there.$\n$\nChoose another folder." /SD IDOK
+    Abort
+  ${EndIf}
+  Push "$INSTDIR"
+  Call LockEIDDirectory
+  Pop $R0
+  ${If} $R0 != 1
+    Push "ERROR: could not restrict the permissions of $INSTDIR. Installation stopped."
+    Call InstallLog
+    MessageBox MB_OK|MB_ICONSTOP "The permissions of the installation folder$\n$INSTDIR$\ncould not be restricted to SYSTEM and Administrators. OpenAccess EID runs a SYSTEM service from this folder, so it will not install there." /SD IDOK
+    Abort
+  ${EndIf}
+  Push "$INSTDIR"
+  Call IsEIDDataTreeTrusted
+  Pop $R0
+  ${If} $R0 == 0
+    Push "ERROR: $INSTDIR already contains files or folders that a standard user owns or can modify, or a junction. Installation stopped."
+    Call InstallLog
+    MessageBox MB_OK|MB_ICONSTOP "The installation folder$\n$INSTDIR$\nalready contains files or folders that are not owned by SYSTEM/Administrators, that other users can modify, or a junction. OpenAccess EID runs a SYSTEM service from this folder, so it will not install there.$\n$\nChoose an empty folder, or remove those items first." /SD IDOK
+    Abort
+  ${ElseIf} $R0 == 2
+    Push "WARNING: could not check the contents of $INSTDIR (PowerShell did not run, or runs in constrained language mode); its permissions have been restricted."
+    Call InstallLog
+  ${EndIf}
   SetOutPath "$INSTDIR"
 
   ; Install DLL files to Program Files
@@ -221,16 +264,17 @@ Section "Core" SecCore
   File "tools\Disable-LsaProtection.ps1"
   SetOutPath "$INSTDIR"
 
-  ; Copy DLLs to System32 (required for LSA and Credential Provider)
+  ; Copy DLLs to System32 (required for LSA and Credential Provider).
+  ; LSASS and LogonUI keep these mapped, and the uninstaller that just ran has
+  ; usually queued their deletion for the next reboot - InstallSystemDll makes
+  ; sure the new copy is what is left after that reboot.
   ${DisableX64FSRedirection}
-  ; Use /REBOOTOK to handle locked files (LSA loads DLLs at boot only)
-  Delete /REBOOTOK "$SYSDIR\OpenAccessEIDPackage.dll"
-  Delete /REBOOTOK "$SYSDIR\EIDCredentialProvider.dll"
-  Delete /REBOOTOK "$SYSDIR\EIDPasswordChangeNotification.dll"
-
-  CopyFiles /SILENT "$INSTDIR\OpenAccessEIDPackage.dll" "$SYSDIR\OpenAccessEIDPackage.dll"
-  CopyFiles /SILENT "$INSTDIR\EIDCredentialProvider.dll" "$SYSDIR\EIDCredentialProvider.dll"
-  CopyFiles /SILENT "$INSTDIR\EIDPasswordChangeNotification.dll" "$SYSDIR\EIDPasswordChangeNotification.dll"
+  Push "OpenAccessEIDPackage.dll"
+  Call InstallSystemDll
+  Push "EIDCredentialProvider.dll"
+  Call InstallSystemDll
+  Push "EIDPasswordChangeNotification.dll"
+  Call InstallSystemDll
 
   ; Create Start Menu folder and shortcuts for all executables
   CreateDirectory "$SMPROGRAMS\OpenAccess EID"
@@ -329,7 +373,15 @@ Section "Core" SecCore
   SetRebootFlag true
 
   ${If} $MigratedFromLegacy == 1
-    MessageBox MB_OK|MB_ICONEXCLAMATION "EID Authentication has been upgraded to OpenAccess EID.$\n$\nGroup Policy set through the old EIDAuthentication administrative template is NOT carried over. After rebooting, apply the OpenAccess EID template and re-apply any logging policies.$\n$\nThe EID Authentication uninstaller removed the stored smart-card credentials while unregistering: users must re-enrol their cards.$\n$\nA reboot is required before smart-card logon uses the new version." /SD IDOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "EID Authentication has been upgraded to OpenAccess EID.$\n$\nGroup Policy set through the old EIDAuthentication administrative template is NOT carried over. After rebooting, apply the OpenAccess EID template and re-apply any logging policies.$\n$\nA reboot is required before smart-card logon uses the new version." /SD IDOK
+  ${EndIf}
+
+  ; Always recorded, and shown unless silent: after this, every enrolled user is
+  ; locked out of smart-card logon until they enrol again.
+  ${If} $EnrolmentsWiped == 1
+    Push "NOTICE: the uninstaller of the previous version deleted every user's stored smart-card credential. Users must re-enrol their cards before they can log on with them."
+    Call InstallLog
+    MessageBox MB_OK|MB_ICONEXCLAMATION "The uninstaller of the previous version deleted every user's stored smart-card credential.$\n$\nUsers must re-enrol their cards before they can log on with them." /SD IDOK
   ${EndIf}
 
 SectionEnd
@@ -543,12 +595,46 @@ FunctionEnd
 
 Section "Uninstall"
 
-  ; Unregister all components first (from System32)
+  ; Opt-in removal of stored credentials (if the checkbox was selected) comes
+  ; first: it asks the package loaded in LSASS to delete them, so it has to run
+  ; while the package is still registered.
+  ${If} $Uninstall_RemoveMappings = 1
+    ; This requires calling into the DLL since NSIS cannot directly manipulate LSA
+    DetailPrint "Removing EID credential mappings from LSA..."
+    ${DisableX64FSRedirection}
+    ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\OpenAccessEIDPackage.dll",CleanupLsaCredentials' $1
+    ${If} $1 != 0
+      DetailPrint "Note: LSA cleanup returned code $1 (may be expected if not installed)"
+    ${EndIf}
+    ${EnableX64FSRedirection}
+  ${Else}
+    DetailPrint "Skipping LSA credential mapping removal (not selected)"
+  ${EndIf}
+
+  ; Unregister all components (from System32)
   ${DisableX64FSRedirection}
   DetailPrint "Unregistering components..."
   ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\OpenAccessEIDPackage.dll",DllUnRegister' $0
   ${If} $0 != 0
     DetailPrint "Warning: DllUnRegister returned error code $0 - continuing with manual cleanup"
+  ${EndIf}
+
+  ; rundll32 exits 0 whether or not DllUnRegister worked, so check the LSA
+  ; package lists themselves and take out any of our names still there. Left
+  ; in, they point LSASS at DLLs that are deleted at the reboot.
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\Remove-EIDLsaRegistration.ps1" "scripts\Remove-EIDLsaRegistration.ps1"
+  Push "$PLUGINSDIR\Remove-EIDLsaRegistration.ps1"
+  System::Call 'kernel32::SetEnvironmentVariable(t "OAEID_SCRIPT", t s)'
+  nsExec::ExecToLog /TIMEOUT=120000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& ([ScriptBlock]::Create([IO.File]::ReadAllText($$env:OAEID_SCRIPT))); exit $$LASTEXITCODE"`
+  Pop $0
+  ${If} $0 == 10
+    DetailPrint "LSA package lists checked: no OpenAccess EID entries left."
+  ${ElseIf} $0 == 13
+    DetailPrint "DllUnRegister had left OpenAccess EID entries in the LSA package lists; removed them."
+  ${Else}
+    DetailPrint "WARNING: could not confirm that the LSA package lists are clean (result $0)."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Could not confirm that Windows no longer loads the OpenAccess EID LSA packages (result $0).$\n$\nBefore rebooting, check these values under$\nHKLM\SYSTEM\CurrentControlSet\Control\Lsa$\n  Security Packages, Authentication Packages, Notification Packages$\nand remove OpenAccessEIDPackage, EIDAuthenticationPackage and EIDPasswordChangeNotification if listed." /SD IDOK
   ${EndIf}
 
   ${EnableX64FSRedirection}
@@ -568,20 +654,6 @@ Section "Uninstall"
     ${EnableX64FSRedirection}
   ${Else}
     DetailPrint "Skipping certificate removal (not selected)"
-  ${EndIf}
-
-  ; Conditionally remove EID credential mappings from LSA Private Data (if checkbox was selected)
-  ${If} $Uninstall_RemoveMappings = 1
-    ; This requires calling into the DLL since NSIS cannot directly manipulate LSA
-    DetailPrint "Removing EID credential mappings from LSA..."
-    ${DisableX64FSRedirection}
-    ExecWait '"$SYSDIR\rundll32.exe" "$SYSDIR\OpenAccessEIDPackage.dll",CleanupLsaCredentials' $1
-    ${If} $1 != 0
-      DetailPrint "Note: LSA cleanup returned code $1 (may be expected if not installed)"
-    ${EndIf}
-    ${EnableX64FSRedirection}
-  ${Else}
-    DetailPrint "Skipping LSA credential mapping removal (not selected)"
   ${EndIf}
 
   ; Delete Start Menu shortcuts and folder
@@ -632,6 +704,23 @@ Section "Uninstall"
   nsExec::ExecToLog '"$INSTDIR\EIDTraceConsumer.exe" -uninstall'
   Delete "$INSTDIR\EIDTraceConsumer.exe"
   Delete "$INSTDIR\cred_provider.ico"
+
+  ; Disable-LsaProtection.ps1 keeps its backup of the original RunAsPPL values
+  ; until -Restore has put them back. If the backup is still there, LSA
+  ; protection is most likely still off: keep a copy of the script next to the
+  ; backup (C:\ProgramData\OpenAccessEID is writable only by SYSTEM and
+  ; Administrators) and tell the administrator how to restore it.
+  ${If} ${FileExists} "C:\ProgramData\OpenAccessEID\LsaProtectionBackup\RunAsPPL.backup.txt"
+    ClearErrors
+    CopyFiles /SILENT "$INSTDIR\tools\Disable-LsaProtection.ps1" "C:\ProgramData\OpenAccessEID\LsaProtectionBackup\Disable-LsaProtection.ps1"
+    ${If} ${Errors}
+      DetailPrint "WARNING: LSA protection (RunAsPPL) was turned off with Disable-LsaProtection.ps1 and not restored, and the script could not be kept. Restore the values recorded in C:\ProgramData\OpenAccessEID\LsaProtectionBackup\RunAsPPL.backup.txt by hand, then reboot."
+      MessageBox MB_OK|MB_ICONEXCLAMATION "LSA protection (RunAsPPL) was turned off with Disable-LsaProtection.ps1 and has not been restored.$\n$\nRestore the values recorded in$\nC:\ProgramData\OpenAccessEID\LsaProtectionBackup\RunAsPPL.backup.txt$\nunder HKLM\SYSTEM\CurrentControlSet\Control\Lsa, then reboot." /SD IDOK
+    ${Else}
+      DetailPrint "WARNING: LSA protection (RunAsPPL) was turned off with Disable-LsaProtection.ps1 and not restored. The script was kept at C:\ProgramData\OpenAccessEID\LsaProtectionBackup\Disable-LsaProtection.ps1; run it with -Restore as administrator, then reboot."
+      MessageBox MB_OK|MB_ICONEXCLAMATION "LSA protection (RunAsPPL) was turned off with Disable-LsaProtection.ps1 and has not been restored. It stays off after this uninstall.$\n$\nThe script has been kept. To turn LSA protection back on, run as administrator:$\n$\npowershell -NoProfile -ExecutionPolicy Bypass -File $\"C:\ProgramData\OpenAccessEID\LsaProtectionBackup\Disable-LsaProtection.ps1$\" -Restore$\n$\nthen reboot." /SD IDOK
+    ${EndIf}
+  ${EndIf}
 
   ; Delete administrator tools
   Delete "$INSTDIR\tools\Disable-LsaProtection.ps1"
@@ -713,30 +802,353 @@ Function AddFileSize
 FunctionEnd
 
 ;--------------------------------
+;Install log
+
+; Push <text> / Call InstallLog: DetailPrint <text> and append it to
+; %TEMP%\OpenAccessEID-install.log, so an unattended (/S) install keeps a
+; record of every warning it could not show. Also usable from .onInit, where
+; DetailPrint has nowhere to print.
+Function InstallLog
+  Exch $R0
+  Push $R1
+  DetailPrint "$R0"
+  ClearErrors
+  FileOpen $R1 "$TEMP\OpenAccessEID-install.log" a
+  ${IfNot} ${Errors}
+    FileSeek $R1 0 END
+    FileWrite $R1 "$R0$\r$\n"
+    FileClose $R1
+  ${EndIf}
+  Pop $R1
+  Pop $R0
+FunctionEnd
+
+;--------------------------------
+;System32 DLL installation
+
+; Push <file name> / Call InstallSystemDll
+; Installs $INSTDIR\<file name> as $SYSDIR\<file name> (call with x64 file
+; system redirection disabled) so that the new file is what is there after the
+; next reboot. LSASS (and LogonUI) keep the current copy mapped, so it cannot be
+; overwritten in place, and the uninstaller that ran before this install has
+; usually queued "delete $SYSDIR\<file name>" for that reboot. So:
+;   1. stage the new file next to it as <file name>.oaeid-new;
+;   2. rename the current copy aside (Windows allows renaming a mapped DLL) and
+;      queue the renamed file for deletion;
+;   3. copy the staged file into place now, so this session (DllRegister, the
+;      trace config) already uses the new version;
+;   4. queue a reboot-time rename of the staged file over <file name>.
+;      PendingFileRenameOperations is processed in the order the entries were
+;      queued, so this runs after any delete of <file name> queued earlier and
+;      leaves the new file in place.
+; Stops the installation if the new file cannot even be staged: registering
+; packages whose DLL is missing would leave LSA pointing at nothing.
+Function InstallSystemDll
+  Exch $R9
+  Push $R8
+  Push $R7
+  StrCpy $R8 "$SYSDIR\$R9.oaeid-new"
+
+  Push "$INSTDIR\$R9"
+  System::Call 'kernel32::CopyFile(t s, t R8, i 0) i .R7'
+  ${If} $R7 = 0
+    Push "ERROR: could not write $R8. Installation stopped; nothing has been registered with LSA."
+    Call InstallLog
+    MessageBox MB_OK|MB_ICONSTOP "Could not write$\n$R8$\n$\nThe installation has been stopped before anything was registered with Windows. Free some disk space or check that no security product blocks writes to System32, then run the installer again." /SD IDOK
+    Abort
+  ${EndIf}
+
+  ${If} ${FileExists} "$SYSDIR\$R9"
+    System::Call 'ole32::CoCreateGuid(g .s)'
+    Pop $R7
+    StrCpy $R7 "$SYSDIR\$R9.oaeid-old-$R7"
+    ClearErrors
+    Rename "$SYSDIR\$R9" "$R7"
+    ${IfNot} ${Errors}
+      Delete /REBOOTOK "$R7"
+    ${EndIf}
+  ${EndIf}
+
+  System::Call 'kernel32::CopyFile(t R8, t "$SYSDIR\$R9", i 0) i .R7'
+  ${If} $R7 = 0
+    Push "WARNING: $SYSDIR\$R9 is in use and could not be replaced now; the new version takes its place at the next reboot."
+    Call InstallLog
+  ${EndIf}
+
+  ; MOVEFILE_REPLACE_EXISTING (1) | MOVEFILE_DELAY_UNTIL_REBOOT (4). Queued
+  ; whatever happened above, so a delete queued earlier cannot win.
+  System::Call 'kernel32::MoveFileEx(t R8, t "$SYSDIR\$R9", i 5) i .R7'
+  ${If} $R7 = 0
+    Push "ERROR: could not schedule $R8 to replace $SYSDIR\$R9 at the next reboot. If $SYSDIR\$R9 is missing after rebooting, run this installer again before rebooting a second time."
+    Call InstallLog
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Could not schedule the new $R9 to be put in place at the next reboot.$\n$\nAfter rebooting, check that $SYSDIR\$R9 exists. If it does not, run this installer again." /SD IDOK
+  ${EndIf}
+  SetRebootFlag true
+
+  Pop $R7
+  Pop $R8
+  Pop $R9
+FunctionEnd
+
+;--------------------------------
+;Upgrade from uninstallers that delete enrolments
+
+; Call NeutraliseOldUnregister / Pop <"1" | "0">
+; Uninstallers of v2.0.00 and earlier run
+;   rundll32 <System32>\<package DLL>,DllUnRegister
+; and that DllUnRegister deletes every user's stored credential. This puts this
+; version's package DLL - whose DllUnRegister only removes registrations - at
+; that path first, so the old uninstaller runs it instead and the enrolments
+; survive the upgrade. The DLL LSASS has loaded is renamed aside (Windows allows
+; renaming a mapped DLL) and deleted at the next reboot; the old uninstaller then
+; deletes the substitute, which nothing has mapped, at once. v1.3.00 and earlier
+; use EIDAuthenticationPackage.dll; this version's DllUnRegister also removes
+; registrations made under that name. Only the cleanup actions the operator
+; ticks in the old uninstaller (none in a silent run) remove anything.
+; "1" when the substitute is in place, "0" otherwise (the old DLL is then left
+; exactly as it was).
+Function NeutraliseOldUnregister
+  Push $R9
+  Push $R8
+  Push $R7
+  ${If} $MigratedFromLegacy == 1
+    StrCpy $R9 "$SYSDIR\EIDAuthenticationPackage.dll"
+  ${Else}
+    StrCpy $R9 "$SYSDIR\OpenAccessEIDPackage.dll"
+  ${EndIf}
+  StrCpy $R8 0
+
+  InitPluginsDir
+  ClearErrors
+  File "/oname=$PLUGINSDIR\OpenAccessEIDPackage.dll" "..\x64\Release\OpenAccessEIDPackage.dll"
+  ${If} ${Errors}
+    Push "Could not extract the substitute package DLL to $PLUGINSDIR."
+    Call InstallLog
+  ${Else}
+    ${DisableX64FSRedirection}
+    StrCpy $R7 ""
+    ${If} ${FileExists} "$R9"
+      System::Call 'ole32::CoCreateGuid(g .s)'
+      Pop $R7
+      StrCpy $R7 "$R9.oaeid-old-$R7"
+      ClearErrors
+      Rename "$R9" "$R7"
+      ${If} ${Errors}
+        Push "Could not rename $R9 aside."
+        Call InstallLog
+        StrCpy $R7 "failed"
+      ${EndIf}
+    ${EndIf}
+    ${If} $R7 != "failed"
+      ; bFailIfExists: the path has just been vacated.
+      Push "$PLUGINSDIR\OpenAccessEIDPackage.dll"
+      System::Call 'kernel32::CopyFile(t s, t R9, i 1) i .R8'
+      ${If} $R8 = 0
+        StrCpy $R8 0
+        Push "Could not copy the substitute package DLL to $R9."
+        Call InstallLog
+        ; Put the original back so the old uninstaller still has its DLL.
+        ${If} $R7 != ""
+          Rename "$R7" "$R9"
+        ${EndIf}
+      ${Else}
+        StrCpy $R8 1
+        ${If} $R7 != ""
+          Delete /REBOOTOK "$R7"
+        ${EndIf}
+        Push "Substituted this version's unregistration step for the old uninstaller's ($R9), so stored credentials are kept."
+        Call InstallLog
+      ${EndIf}
+    ${EndIf}
+    ${EnableX64FSRedirection}
+  ${EndIf}
+
+  StrCpy $R9 $R8
+  Pop $R7
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
+;--------------------------------
 ;ProgramData hardening
 ;
 ; Any user can create a subdirectory of C:\ProgramData, so the product directory
 ; (or the legacy C:\ProgramData\EIDAuthentication) may already exist owned by an
 ; unprivileged user, be a junction, or hold a planted logging.json or junction.
 ; LSASS and the trace consumer write and rotate logs there as SYSTEM, so the
-; installer keeps only a tree that is entirely owned by SYSTEM/Administrators and
-; free of reparse points, and locks the directory down itself.
+; installer keeps only a tree that is entirely owned by SYSTEM/Administrators,
+; writable by nobody else and free of reparse points, and locks the directory
+; down itself. The checks and the lock-down are PowerShell scripts from
+; Installer\scripts, extracted to $PLUGINSDIR.
 
-; Push <path> / Call IsEIDDataTreeTrusted / Pop <result>: "1" when <path> and
-; everything below it is owned by SYSTEM (S-1-5-18) or Administrators
-; (S-1-5-32-544) and nothing is a reparse point (attribute 1024); "0" otherwise,
-; including when the check itself fails. Stops at the first reparse point, so it
-; never walks into a junction's target.
+; Extracts the installer's PowerShell helpers to $PLUGINSDIR.
+Function ExtractEIDScripts
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\Test-EIDDirectoryTree.ps1" "scripts\Test-EIDDirectoryTree.ps1"
+  File "/oname=$PLUGINSDIR\Lock-EIDDirectory.ps1" "scripts\Lock-EIDDirectory.ps1"
+FunctionEnd
+
+; Push <script file name> / Push <path> / Call RunEIDScript / Pop <result>
+; Runs $PLUGINSDIR\<script> -Path <path> and returns its exit code, or nsExec's
+; "error"/"timeout". The script is read and run as a script block, so a
+; machine-wide PowerShell execution policy cannot block it, and the two strings
+; travel in environment variables, so no quoting in a path can break the
+; command line.
+Function RunEIDScript
+  Exch $R0
+  Exch
+  Exch $R1
+  Push $R2
+  Call ExtractEIDScripts
+  Push "$PLUGINSDIR\$R1"
+  System::Call 'kernel32::SetEnvironmentVariable(t "OAEID_SCRIPT", t s)'
+  System::Call 'kernel32::SetEnvironmentVariable(t "OAEID_PATH", t R0)'
+  nsExec::ExecToLog /TIMEOUT=120000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& ([ScriptBlock]::Create([IO.File]::ReadAllText($$env:OAEID_SCRIPT))) -Path $$env:OAEID_PATH; exit $$LASTEXITCODE"`
+  Pop $R2
+  StrCpy $R0 $R2
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+
+; Push <path> / Call IsReparsePoint / Pop <"1" | "0">: "1" when <path> itself
+; is a junction, symbolic link or other reparse point. Does not follow it.
+Function IsReparsePoint
+  Exch $R9
+  Push $R8
+  System::Call 'kernel32::GetFileAttributes(t R9) i .R8'
+  ${If} $R8 = -1
+    StrCpy $R9 0
+  ${Else}
+    IntOp $R8 $R8 & 0x400
+    ${If} $R8 <> 0
+      StrCpy $R9 1
+    ${Else}
+      StrCpy $R9 0
+    ${EndIf}
+  ${EndIf}
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
+; Push <path> / Call IsEIDDataTreeTrusted / Pop <result>:
+;   "1" <path> and everything below it is owned by SYSTEM (S-1-5-18) or
+;       Administrators (S-1-5-32-544), nothing is a reparse point, and no ACE
+;       lets anyone but SYSTEM, Administrators or CREATOR OWNER write, create,
+;       delete, change permissions or take ownership;
+;   "0" not trusted (including an ACL that cannot be read);
+;   "2" the check could not run: PowerShell missing, blocked, timed out or in
+;       constrained language mode. That is neither answer - callers must not
+;       move anything aside on it.
+; The check stops at the first reparse point, so it never walks into a
+; junction's target. See Installer\scripts\Test-EIDDirectoryTree.ps1.
 Function IsEIDDataTreeTrusted
   Exch $R9
-  nsExec::ExecToLog `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$ErrorActionPreference='Stop'; try { $$ok='S-1-5-18','S-1-5-32-544'; function T($$i) { if (($$i.Attributes -band 1024) -or ($$ok -notcontains (Get-Acl -LiteralPath $$i.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value)) { exit 1 } }; T (Get-Item -LiteralPath '$R9' -Force); Get-ChildItem -LiteralPath '$R9' -Recurse -Force | ForEach-Object { T $$_ }; exit 0 } catch { exit 1 }"`
+  Push "Test-EIDDirectoryTree.ps1"
+  Push $R9
+  Call RunEIDScript
   Pop $R9
-  ${If} $R9 == 0
+  ${If} $R9 == 10
     StrCpy $R9 1
-  ${Else}
+  ${ElseIf} $R9 == 11
     StrCpy $R9 0
+  ${Else}
+    StrCpy $R9 2
   ${EndIf}
   Exch $R9
+FunctionEnd
+
+; Push <directory> / Call LockEIDDirectory / Pop <"1" | "0">
+; Owner Administrators and a protected DACL that replaces every other ACE: Full
+; control for SYSTEM and Administrators, read/execute for Users, inherited by
+; everything below (the runtime's EID_LOG_DIR_SDDL). PowerShell writes owner and
+; DACL in one call; when that fails or cannot run, icacls does it in two (which
+; leaves any extra explicit ACE in place - the trust check afterwards catches
+; that). Never touches a reparse point.
+Function LockEIDDirectory
+  Exch $R9
+  Push $R8
+  Push $R9
+  Call IsReparsePoint
+  Pop $R8
+  ${If} $R8 == 1
+    Push "WARNING: not changing the permissions of $R9: it is a junction or symbolic link."
+    Call InstallLog
+    StrCpy $R9 0
+  ${Else}
+    Push "Lock-EIDDirectory.ps1"
+    Push $R9
+    Call RunEIDScript
+    Pop $R8
+    ${If} $R8 == 10
+      StrCpy $R9 1
+    ${Else}
+      Push "Could not set the permissions of $R9 with PowerShell (result $R8); using icacls."
+      Call InstallLog
+      nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$R9" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX'
+      Pop $R8
+      ${If} $R8 == 0
+        nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$R9" /setowner *S-1-5-32-544'
+        Pop $R8
+      ${EndIf}
+      ${If} $R8 == 0
+        StrCpy $R9 1
+      ${Else}
+        Push "WARNING: icacls could not secure $R9 (code $R8)."
+        Call InstallLog
+        StrCpy $R9 0
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
+; Push <path> / Push <destination prefix> / Call MoveAside / Pop <new path, or "">
+; Renames <path> to <destination prefix>.untrusted-<random GUID>. The suffix is
+; random, so a standard user cannot pre-create the destination to block the
+; move; a failed rename (typically a handle held open) is retried for about ten
+; seconds. "" when it never succeeded.
+Function MoveAside
+  Exch $R8
+  Exch
+  Exch $R9
+  Push $R7
+  Push $R6
+  StrCpy $R6 0
+  ${Do}
+    IntOp $R6 $R6 + 1
+    System::Call 'ole32::CoCreateGuid(g .s)'
+    Pop $R7
+    StrCpy $R7 "$R8.untrusted-$R7"
+    ClearErrors
+    Rename "$R9" "$R7"
+    ${IfNot} ${Errors}
+      ${ExitDo}
+    ${EndIf}
+    StrCpy $R7 ""
+    ${If} $R6 >= 5
+      ${ExitDo}
+    ${EndIf}
+    Sleep 2000
+  ${Loop}
+  StrCpy $R9 $R7
+  Pop $R6
+  Pop $R7
+  Exch
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
+; Shown and recorded when an untrusted folder cannot be moved out of the way:
+; until an administrator deals with it, OpenAccess EID writes no log files.
+; Push <path> / Call WarnNotMovedAside
+Function WarnNotMovedAside
+  Exch $R9
+  Push "WARNING: $R9 is a junction, is not owned by SYSTEM/Administrators or can be modified by other users, and could not be moved aside. OpenAccess EID will NOT write log files until an administrator deletes or renames it and runs this installer again."
+  Call InstallLog
+  MessageBox MB_OK|MB_ICONEXCLAMATION "$R9$\n$\nis a junction, is not owned by SYSTEM/Administrators, or can be modified by other users, and could not be moved aside (something may be holding it open).$\n$\nOpenAccess EID will NOT write log files until an administrator deletes or renames it and runs this installer again. Smart-card logon is not affected." /SD IDOK
+  Pop $R9
 FunctionEnd
 
 ; Create C:\ProgramData\OpenAccessEID and its logs directory, owned by
@@ -744,38 +1156,98 @@ FunctionEnd
 ; SYSTEM and Administrators, read-only to Users (the same DACL the runtime
 ; applies, EID_LOG_DIR_SDDL). An existing directory that fails
 ; IsEIDDataTreeTrusted is moved aside, never adopted: taking ownership of it
-; would launder whatever was planted inside.
+; would launder whatever was planted inside. Only the base directory is created
+; before the lock-down; logs is created afterwards, so it inherits the protected
+; DACL and is owned by whoever runs the installer (Administrators or SYSTEM) -
+; it is never handed over with /setowner, which would give Administrators'
+; ownership to something a standard user created in the meantime.
 Function SecureEIDDataDir
-  ${If} ${FileExists} "C:\ProgramData\OpenAccessEID"
-    Push "C:\ProgramData\OpenAccessEID"
+  StrCpy $R9 "C:\ProgramData\OpenAccessEID"
+
+  ${If} ${FileExists} "$R9"
+    Push $R9
     Call IsEIDDataTreeTrusted
     Pop $R0
-    ${If} $R0 != 1
-      ${GetTime} "" "L" $R1 $R2 $R3 $R4 $R5 $R6 $R7
-      StrCpy $R8 "C:\ProgramData\OpenAccessEID.untrusted-$R3$R2$R1-$R5$R6$R7"
-      ClearErrors
-      Rename "C:\ProgramData\OpenAccessEID" "$R8"
-      ${If} ${Errors}
-        DetailPrint "WARNING: C:\ProgramData\OpenAccessEID is a junction or not owned by SYSTEM/Administrators and could not be moved aside. OpenAccess EID will not write logs there until an administrator removes it."
+    ${If} $R0 == 0
+      Push $R9
+      Push $R9
+      Call MoveAside
+      Pop $R8
+      ${If} $R8 == ""
+        Push $R9
+        Call WarnNotMovedAside
         Return
       ${EndIf}
-      DetailPrint "WARNING: C:\ProgramData\OpenAccessEID was a junction or not owned by SYSTEM/Administrators; moved aside to $R8 for review."
+      Push "WARNING: $R9 was a junction, not owned by SYSTEM/Administrators, or modifiable by other users; moved aside to $R8 for review."
+      Call InstallLog
+    ${ElseIf} $R0 == 2
+      Push "WARNING: could not check $R9 (PowerShell did not run, or runs in constrained language mode); securing it in place instead of moving it aside."
+      Call InstallLog
     ${EndIf}
   ${EndIf}
 
-  ; Base directory first, so logs is created under the locked-down DACL.
-  CreateDirectory "C:\ProgramData\OpenAccessEID"
-  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "C:\ProgramData\OpenAccessEID" /setowner *S-1-5-32-544'
+  ; Base directory only, then lock it before anything is created inside it.
+  CreateDirectory "$R9"
+  Push $R9
+  Call IsReparsePoint
   Pop $R0
-  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "C:\ProgramData\OpenAccessEID" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX'
-  Pop $R1
-  CreateDirectory "C:\ProgramData\OpenAccessEID\logs"
-  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "C:\ProgramData\OpenAccessEID\logs" /setowner *S-1-5-32-544'
-  Pop $R2
-  ${If} $R0 != 0
-  ${OrIf} $R1 != 0
-  ${OrIf} $R2 != 0
-    DetailPrint "WARNING: could not fully secure C:\ProgramData\OpenAccessEID (icacls codes $R0/$R1/$R2); OpenAccess EID may refuse to log there."
+  ${If} $R0 == 1
+    Push $R9
+    Call WarnNotMovedAside
+    Return
+  ${EndIf}
+  Push $R9
+  Call LockEIDDirectory
+  Pop $R0
+  ${If} $R0 != 1
+    Push "WARNING: could not secure $R9; OpenAccess EID will refuse to write logs there."
+    Call InstallLog
+    Return
+  ${EndIf}
+
+  ; Until the lock-down above, a standard user could create logs (or a junction
+  ; called logs) in a directory this installer had just created. Now that nobody
+  ; else can add anything, check it and move an untrusted one out of the tree.
+  ${If} ${FileExists} "$R9\logs"
+    Push "$R9\logs"
+    Call IsReparsePoint
+    Pop $R0
+    ${If} $R0 == 1
+      StrCpy $R0 0
+    ${Else}
+      Push "$R9\logs"
+      Call IsEIDDataTreeTrusted
+      Pop $R0
+    ${EndIf}
+    ${If} $R0 == 0
+      Push "$R9\logs"
+      Push "$R9-logs"
+      Call MoveAside
+      Pop $R8
+      ${If} $R8 == ""
+        Push "$R9\logs"
+        Call WarnNotMovedAside
+        Return
+      ${EndIf}
+      Push "WARNING: $R9\logs was a junction, not owned by SYSTEM/Administrators, or modifiable by other users; moved aside to $R8 for review."
+      Call InstallLog
+    ${EndIf}
+  ${EndIf}
+
+  CreateDirectory "$R9\logs"
+
+  ; Final check of the whole tree, including anything else planted before the
+  ; lock-down (the runtime also ignores a logging.json it does not trust).
+  Push $R9
+  Call IsEIDDataTreeTrusted
+  Pop $R0
+  ${If} $R0 == 0
+    Push "WARNING: $R9 still contains items that are not owned by SYSTEM/Administrators or that other users can modify. Review and remove them; OpenAccess EID ignores an untrusted logging.json and log folder."
+    Call InstallLog
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$R9 still contains items that are not owned by SYSTEM/Administrators or that other users can modify.$\n$\nReview and remove them. Until then OpenAccess EID may not write log files there." /SD IDOK
+  ${ElseIf} $R0 == 2
+    Push "WARNING: could not verify $R9 after securing it (PowerShell did not run, or runs in constrained language mode)."
+    Call InstallLog
   ${EndIf}
 FunctionEnd
 
@@ -802,6 +1274,7 @@ Function .onInit
   ; because silent (/S) installs never show the Security Options page.
   SetRegView 64
   StrCpy $MigratedFromLegacy 0
+  StrCpy $EnrolmentsWiped 0
   ; Current install location, else one made under the former product name.
   ReadRegStr $9 HKLM "Software\OpenAccessEID" "InstallPath"
   ${If} $9 == ""
@@ -844,13 +1317,15 @@ Function .onInit
 
   ; Uninstallers of v2.0.00 and earlier delete every user's stored credential
   ; while unregistering, whatever the cleanup checkboxes say. Newer ones keep
-  ; them and record that with this marker (written by the Core section).
+  ; them and record that with this marker (written by the Core section). For the
+  ; older ones, NeutraliseOldUnregister (below) swaps in this version's
+  ; unregistration step before running them.
   ClearErrors
   ReadRegDWORD $4 HKLM "$5" "KeepsEnrolmentsOnUninstall"
   ${If} $4 == 1
     StrCpy $3 "Smart-card enrollments and stored credentials are kept."
   ${Else}
-    StrCpy $3 "WARNING: the uninstaller of this older version deletes every user's stored smart-card credential. Users will have to re-enrol their cards afterwards."
+    StrCpy $3 "The uninstaller of this older version deletes every user's stored smart-card credential. The installer replaces that step so that enrollments are kept; if it cannot, you will be asked before anything is removed."
   ${EndIf}
 
   ; Installation found - ask user to uninstall first
@@ -885,6 +1360,37 @@ Function .onInit
     ; version has just written (credential provider CLSID, policies).
     ReadRegStr $1 HKLM "$5" "UninstallString"
     ${If} ${FileExists} "$1"
+      ; An uninstaller that wipes enrolments: run it with this version's
+      ; DllUnRegister in place of its own. If that cannot be arranged, an
+      ; interactive upgrade asks; a silent one stops unless /WIPEENROLMENTS=1
+      ; says that losing every enrolment is accepted.
+      ${If} $4 != 1
+        Call NeutraliseOldUnregister
+        Pop $R0
+        ${If} $R0 != 1
+          ${If} ${Silent}
+            ${GetParameters} $R1
+            ClearErrors
+            ${GetOptions} $R1 "/WIPEENROLMENTS=" $R2
+            ${If} ${Errors}
+            ${OrIf} $R2 != 1
+              Push "ERROR: upgrade refused. The uninstaller of the installed version ($6) deletes every user's stored smart-card credential, and this installer could not replace that step (details above). The installed version has not been touched. Upgrade interactively, or run again with /WIPEENROLMENTS=1 to accept that every user must re-enrol."
+              Call InstallLog
+              Abort
+            ${EndIf}
+          ${Else}
+            MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "The installer could not stop the uninstaller of the installed version from deleting every user's stored smart-card credential.$\n$\nIf you continue, every enrolled user must re-enrol their card after the upgrade.$\n$\nContinue anyway?" IDYES WipeAccepted
+            Push "Upgrade cancelled: the old uninstaller would have deleted every stored smart-card credential."
+            Call InstallLog
+            Abort
+            WipeAccepted:
+          ${EndIf}
+          StrCpy $EnrolmentsWiped 1
+          Push "WARNING: running the old uninstaller unchanged; it deletes every user's stored smart-card credential."
+          Call InstallLog
+        ${EndIf}
+      ${EndIf}
+
       ${If} ${Silent}
         ExecWait '"$1" /S _?=$0'
       ${Else}
