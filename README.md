@@ -7,6 +7,7 @@
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=DangerDawgAU_EIDAuthentication&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=DangerDawgAU_EIDAuthentication)
 [![Aikido Security](https://img.shields.io/badge/Aikido-security-1f6feb)](https://app.aikido.dev/repositories/2594845)
 [![Aikido Code Quality](https://img.shields.io/badge/Aikido-code%20quality-1f6feb)](https://app.aikido.dev/repositories/2594845)
+[![Snyk Security](https://snyk.io/test/github/SP00KY-CB/OpenAccessEID/badge.svg)](https://app.snyk.io/org/sp00ky-cb/project/936e041e-19b8-47c5-a278-2a090b81a88c)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/SP00KY-CB/OpenAccessEID/badge)](https://scorecard.dev/viewer/?uri=github.com/SP00KY-CB/OpenAccessEID)
 [![License: LGPL-2.1](https://img.shields.io/github/license/SP00KY-CB/OpenAccessEID)](LICENSE)
 
