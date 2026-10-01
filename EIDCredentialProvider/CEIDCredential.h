@@ -89,12 +89,21 @@ public:
 	CContainer* GetContainer() const;
 
 	// Used by CContainerHolderFactory to keep the selected tile alive across a card
-	// removal/re-insertion. IsSelected() reports whether LogonUI has this tile zoomed;
-	// SetDisconnected() morphs the tile between the PIN prompt and a "please reconnect
-	// your smart card" message.
+	// removal/re-insertion. IsSelected() reports whether LogonUI has this tile zoomed.
+	// The tile morphs between the PIN prompt and a "please reconnect your smart card"
+	// message in two steps:
+	//  - MarkDisconnectedIfSelected() / MarkReconnected() change the state only (no call into
+	//    LogonUI) and are called with the factory's list lock held. MarkDisconnectedIfSelected
+	//    sets the flag only if the tile is still selected (atomically with SetDeselected) and
+	//    returns FALSE when it is not (the caller then erases it); MarkReconnected returns
+	//    TRUE if it cleared the flag.
+	//  - UpdateConnectionFields() then pushes the current state to LogonUI; it is called
+	//    with no lock held.
 	BOOL IsSelected() const;
 	BOOL IsDisconnected() const;
-	void SetDisconnected(__in BOOL fDisconnected);
+	BOOL MarkDisconnectedIfSelected();
+	BOOL MarkReconnected();
+	void UpdateConnectionFields();
 	// Back-reference to the owning provider so the tile can ask to be removed from the tile
 	// list once LogonUI deselects it in the disconnected ("please reconnect") state.
 	void SetProvider(__in CEIDProvider* pProvider);
@@ -130,8 +139,10 @@ public:
 	BOOL        _fDisconnected;  // TRUE while the card is absent and the tile shows the reconnect prompt.
 	CEIDProvider* _pProvider;   // Owning provider; used to drop this tile when deselected while disconnected.
 	// Guards _rgFieldStrings, _pCredProvCredentialEvents, _fSelected, _fDisconnected and
-	// _pProvider against the smart-card notifier thread (SetDisconnected) racing LogonUI's UI
-	// thread. Never held across a call into LogonUI or into the provider/tile list.
+	// _pProvider against the smart-card notifier thread (the disconnect morph / revive) racing
+	// LogonUI's UI thread. May be taken while the factory's list lock is held (that is the only
+	// nesting), never the other way round; never held across a call into LogonUI or into the
+	// provider/tile list.
 	mutable CRITICAL_SECTION _csFields;
 
 };

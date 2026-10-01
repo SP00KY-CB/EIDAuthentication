@@ -42,6 +42,14 @@
 #include "../EIDCardLibrary/CSmartCardNotifier.h"
 #include "../EIDCardLibrary/GPO.h"
 
+// The factory detects these by signature and silently degrades if they stop matching: the
+// list would no longer pin tiles it hands out of its lock, or the selected tile would no
+// longer morph / revive / detach from the provider. Fail the build instead.
+static_assert(ContainerHolderHasAddRef<CEIDCredential>::value,
+	"CContainerHolderFactory must see CEIDCredential::AddRef to pin tiles used outside its lock");
+static_assert(ContainerHolderHasTileState<CEIDCredential>::value,
+	"CContainerHolderFactory must see CEIDCredential's disconnected-tile methods and SetProvider");
+
 // CEIDProvider ////////////////////////////////////////////////////////
 
 CEIDProvider::CEIDProvider():
@@ -68,6 +76,31 @@ CEIDProvider::~CEIDProvider()
 	{
 		_pSmartCardConnectionNotifier->Stop();
 		delete _pSmartCardConnectionNotifier;  // NOSONAR - OWNERSHIP-01: manual Win32 lifetime management
+	}
+
+	// Tiles still held by LogonUI may outlive us: drop their raw back-pointer now, before
+	// _csCallback is deleted (RemoveDisconnectedTile enters it). Tiles already erased from the
+	// list were detached when they were erased. List lock -> _csFields is the allowed order.
+	_CredentialList.Lock();
+	for (DWORD i = 0; i < _CredentialList.ContainerHolderCount(); i++)
+	{
+		if (CEIDCredential* pCred = _CredentialList.GetContainerHolderAt(i))
+		{
+			pCred->SetProvider(nullptr);
+		}
+	}
+	_CredentialList.Unlock();
+
+	// LogonUI normally UnAdvises first; drop any events reference still held. Swap under
+	// _csCallback, release with it dropped (never call into LogonUI under our lock).
+	EnterCriticalSection(&_csCallback);
+	ICredentialProviderEvents* pcpeOld = _pcpe;
+	_pcpe = nullptr;
+	_upAdviseContext = 0;
+	LeaveCriticalSection(&_csCallback);
+	if (pcpeOld != nullptr)
+	{
+		pcpeOld->Release();
 	}
 
 	DeleteCriticalSection(&_csCallback);
@@ -145,10 +178,12 @@ void CEIDProvider::RemoveDisconnectedTile(__in CEIDCredential* pCred)
 	}
 	LeaveCriticalSection(&_csCallback);
 
-	// RemoveContainerHolder takes the list lock internally and releases the list's reference
-	// to pCred. LogonUI still holds its own reference for the duration of the SetDeselected
-	// call that triggered us, so pCred stays alive here.
-	BOOL fRemoved = _CredentialList.RemoveContainerHolder(pCred);
+	// RemoveIfDisconnected takes the list lock internally, re-checks under it that the tile is
+	// still disconnected (the card may have been re-inserted and the tile revived since
+	// SetDeselected looked) and only then releases the list's reference to pCred. LogonUI still
+	// holds its own reference for the duration of the SetDeselected call that triggered us, so
+	// pCred stays alive here.
+	BOOL fRemoved = _CredentialList.RemoveIfDisconnected(pCred);
 
 	if (fRemoved)
 	{
