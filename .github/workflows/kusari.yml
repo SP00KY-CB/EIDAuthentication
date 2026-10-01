@@ -1,0 +1,35 @@
+name: Kusari Inspector
+
+# Kusari Inspector's CI scan (kusaridev/kusari-ci-templates, pinned): reviews
+# each pull request's changes against main for dependency, supply chain and
+# code risks, and fails the PR when Kusari's verdict is not to proceed. The
+# Kusari GitHub App already posts a review comment on every PR, so this
+# workflow does not post a second one; its SARIF result is kept as an
+# artifact and the verdict is in the job log.
+#
+# Secrets: KUSARI_CLIENT_ID and KUSARI_CLIENT_KEY (passed to the template as
+# KUSARI_CLIENT_SECRET), from the Kusari console.
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: kusari-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kusari:
+    name: Kusari Inspector scan
+    # Dependabot runs do not receive Actions secrets.
+    if: github.actor != 'dependabot[bot]'
+    uses: kusaridev/kusari-ci-templates/.github/workflows/kusari-scan-v1.yml@d5891fcb9c8358a7020a286f2f0622a709a4807f  # v1
+    permissions:
+      contents: read
+    secrets:
+      KUSARI_CLIENT_ID: ${{ secrets.KUSARI_CLIENT_ID }}
+      KUSARI_CLIENT_SECRET: ${{ secrets.KUSARI_CLIENT_KEY }}
+    with:
+      fail_on_issues: true
+      post_comment: false
