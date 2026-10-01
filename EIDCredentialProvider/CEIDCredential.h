@@ -99,12 +99,18 @@ public:
 	// list once LogonUI deselects it in the disconnected ("please reconnect") state.
 	void SetProvider(__in CEIDProvider* pProvider);
   private:
+	// Caller must hold _csFields.
 	void SecureClearPin();
+	// Returns an AddRef'd copy of _pCredProvCredentialEvents (or nullptr), taken under
+	// _csFields, so the caller can call into LogonUI with the lock dropped. Caller Releases.
+	ICredentialProviderCredentialEvents* GetEventsAddRef();
+	// Whether the "view certificate" command link may be shown in the current scenario.
+	BOOL IsCertificateLinkAllowed() const;
 
     LONG                                  _cRef;
 
-    CREDENTIAL_PROVIDER_USAGE_SCENARIO    _cpus; // The usage scenario for which we were enumerated.
-	DWORD								  _dwFlags;
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO    _cpus = CPUS_INVALID; // The usage scenario for which we were enumerated.
+	DWORD								  _dwFlags = 0;
 
     CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR  _rgCredProvFieldDescriptors[SFI_NUM_FIELDS];  // An array holding the type   // NOSONAR - LSASS-01: C-style array required by Win32/COM API
                                                                                         // and name of each field in 
@@ -123,5 +129,9 @@ public:
 	BOOL        _fSelected;      // TRUE while LogonUI has this tile zoomed (between SetSelected/SetDeselected).
 	BOOL        _fDisconnected;  // TRUE while the card is absent and the tile shows the reconnect prompt.
 	CEIDProvider* _pProvider;   // Owning provider; used to drop this tile when deselected while disconnected.
+	// Guards _rgFieldStrings, _pCredProvCredentialEvents, _fSelected, _fDisconnected and
+	// _pProvider against the smart-card notifier thread (SetDisconnected) racing LogonUI's UI
+	// thread. Never held across a call into LogonUI or into the provider/tile list.
+	mutable CRITICAL_SECTION _csFields;
 
 };

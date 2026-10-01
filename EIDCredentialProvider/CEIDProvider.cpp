@@ -33,6 +33,7 @@
 #include "CMessageCredential.h"
 
 #include <credentialprovider.h>
+#include <new>
 
 #include "../EIDCardLibrary/guid.h"
 #include "../EIDCardLibrary/EIDCardLibrary.h"
@@ -97,18 +98,14 @@ void CEIDProvider::Callback(EID_CREDENTIAL_PROVIDER_READER_STATE Message, __in L
 			_pMessageCredential->SetStatus(CMessageCredentialStatus::Reading);
 			_pMessageCredential->IncreaseSmartCardCount();
 		}
-		if (_pcpe != nullptr)
+		if (NotifyCredentialsChanged())
 		{
-			_pcpe->CredentialsChanged(_upAdviseContext);
 			Sleep(100);
 		}
 		_CredentialList.ConnectNotification(szReader,szCardName,ActivityCount);
 		if (_pMessageCredential) _pMessageCredential->SetStatus(CMessageCredentialStatus::EndReading);
 
-		if (_pcpe != nullptr)
-		{
-			_pcpe->CredentialsChanged(_upAdviseContext);
-		}
+		NotifyCredentialsChanged();
 		break;
 	case EID_CREDENTIAL_PROVIDER_READER_STATE::EIDCPRSDisconnected:
 		if (_pMessageCredential)
@@ -116,20 +113,18 @@ void CEIDProvider::Callback(EID_CREDENTIAL_PROVIDER_READER_STATE Message, __in L
 			_pMessageCredential->SetStatus(CMessageCredentialStatus::Reading);
 			_pMessageCredential->DecreaseSmartCardCount();
 		}
-		if (_pcpe != nullptr)
+		if (NotifyCredentialsChanged())
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: Disconnect CredentialsChanged (pre-DisconnectNotification)");
-			_pcpe->CredentialsChanged(_upAdviseContext);
 			Sleep(100);
 		}
 		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: Disconnect calling DisconnectNotification");
 		_CredentialList.DisconnectNotification(szReader);
 		if (_pMessageCredential) _pMessageCredential->SetStatus(CMessageCredentialStatus::EndReading);
 
-		if (_pcpe != nullptr)
+		if (NotifyCredentialsChanged())
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: Disconnect CredentialsChanged (post-DisconnectNotification)");
-			_pcpe->CredentialsChanged(_upAdviseContext);
 		}
 
 		break;
@@ -155,11 +150,35 @@ void CEIDProvider::RemoveDisconnectedTile(__in CEIDCredential* pCred)
 	// call that triggered us, so pCred stays alive here.
 	BOOL fRemoved = _CredentialList.RemoveContainerHolder(pCred);
 
-	if (fRemoved && _pcpe != nullptr)
+	if (fRemoved)
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: Deselect purge -> CredentialsChanged tile=%p",(void*)pCred);
-		_pcpe->CredentialsChanged(_upAdviseContext);
+		NotifyCredentialsChanged();
 	}
+}
+
+// The notifier thread (Callback) and the UI thread (RemoveDisconnectedTile) both raise
+// CredentialsChanged, while LogonUI may concurrently UnAdvise/Advise on the UI thread and
+// release the events object. Snapshot and AddRef the pointer under _csCallback, then call
+// out with the lock dropped: never hold our lock across a call into LogonUI.
+BOOL CEIDProvider::NotifyCredentialsChanged()
+{
+	EnterCriticalSection(&_csCallback);
+	ICredentialProviderEvents* pcpe = _pcpe;
+	UINT_PTR upAdviseContext = _upAdviseContext;
+	if (pcpe != nullptr)
+	{
+		pcpe->AddRef();
+	}
+	LeaveCriticalSection(&_csCallback);
+
+	if (pcpe == nullptr)
+	{
+		return FALSE;
+	}
+	pcpe->CredentialsChanged(upAdviseContext);
+	pcpe->Release();
+	return TRUE;
 }
 
 HRESULT CEIDProvider::Initialize()
@@ -180,7 +199,7 @@ HRESULT CEIDProvider::Initialize()
     // For the locked case, a more advanced credprov might only enumerate tiles for the
     // user whose owns the locked session, since those are the only creds that will work
 
-    _pMessageCredential = new CMessageCredential();  // NOSONAR - COM-01: Credential Provider requires heap allocation
+    _pMessageCredential = new (std::nothrow) CMessageCredential();  // NOSONAR - COM-01: Credential Provider requires heap allocation
     if (!_pMessageCredential)
     {
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"E_OUTOFMEMORY");
@@ -195,7 +214,11 @@ HRESULT CEIDProvider::Initialize()
 	_CredentialList.SetReviveOnReconnect(TRUE);
 	_CredentialList.Unlock();
 	_pMessageCredential->SetUsageScenario(_cpus,_dwFlags);
-	_pSmartCardConnectionNotifier = new CSmartCardConnectionNotifier(this);  // NOSONAR - COM-01: Event notifier requires heap allocation
+	_pSmartCardConnectionNotifier = new (std::nothrow) CSmartCardConnectionNotifier(this);  // NOSONAR - COM-01: Event notifier requires heap allocation
+	if (!_pSmartCardConnectionNotifier)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"E_OUTOFMEMORY (smart card notifier)");
+	}
 	return hr;
 }
 
@@ -309,24 +332,37 @@ HRESULT CEIDProvider::Advise(
     UINT_PTR upAdviseContext
     )
 {
-	if (_pcpe != nullptr)
-    {
-        _pcpe->Release();
-    }
-    _pcpe = pcpe;
-    _pcpe->AddRef();
-    _upAdviseContext = upAdviseContext;
+	// The notifier thread reads _pcpe (NotifyCredentialsChanged), so swap it under
+	// _csCallback: reference the new pointer before taking the lock and release the old one
+	// only after dropping it, so no call into LogonUI happens while the lock is held.
+	if (pcpe != nullptr)
+	{
+		pcpe->AddRef();
+	}
+	EnterCriticalSection(&_csCallback);
+	ICredentialProviderEvents* pcpeOld = _pcpe;
+	_pcpe = pcpe;
+	_upAdviseContext = upAdviseContext;
+	LeaveCriticalSection(&_csCallback);
+	if (pcpeOld != nullptr)
+	{
+		pcpeOld->Release();
+	}
     return S_OK;
 }
 
 // Called by LogonUI when the ICredentialProviderEvents callback is no longer valid.
 HRESULT CEIDProvider::UnAdvise()
 {
-	if (_pcpe != nullptr)
-    {
-        _pcpe->Release();
-        _pcpe = nullptr;
-    }
+	EnterCriticalSection(&_csCallback);
+	ICredentialProviderEvents* pcpeOld = _pcpe;
+	_pcpe = nullptr;
+	_upAdviseContext = 0;
+	LeaveCriticalSection(&_csCallback);
+	if (pcpeOld != nullptr)
+	{
+		pcpeOld->Release();
+	}
     return S_OK;
 }
 
@@ -378,6 +414,7 @@ HRESULT CEIDProvider::GetFieldDescriptorAt(  // NOSONAR - COMPLEXITY-01: refacto
 					(*ppcpfd)->pszLabel = nullptr;
 					(*ppcpfd)->dwFieldID = s_rgCredProvFieldDescriptors[dwIndex].dwFieldID;
 					(*ppcpfd)->cpft = s_rgCredProvFieldDescriptors[dwIndex].cpft;
+					(*ppcpfd)->guidFieldType = s_rgCredProvFieldDescriptors[dwIndex].guidFieldType;
 					HINSTANCE Handle = EIDLoadSystemLibrary(TEXT("SmartcardCredentialProvider.dll"));
 					if (Handle)
 					{
@@ -385,6 +422,7 @@ HRESULT CEIDProvider::GetFieldDescriptorAt(  // NOSONAR - COMPLEXITY-01: refacto
 						// C++17 init-statement: Message is only used within this if block
 						if (PWSTR Message = static_cast<PWSTR>(CoTaskMemAlloc(dwMessageLen*sizeof(WCHAR))))  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity
 						{
+							Message[0] = L'\0';  // LoadString leaves the buffer untouched on failure
 							LoadString(Handle, 4, Message, dwMessageLen);
 							(*ppcpfd)->pszLabel = Message;
 							hr = S_OK;
@@ -538,7 +576,7 @@ HRESULT CEIDProvider_CreateInstance(REFIID riid, void** ppv)  // NOSONAR - CAST-
     HRESULT hr;  // NOSONAR - EXPLICIT-TYPE-03: HRESULT visible for security audit
 	if (riid != IID_ICredentialProvider) return E_NOINTERFACE;
     // C++17 init-statement: pProvider is only used within this if block
-    if (CEIDProvider* pProvider = new CEIDProvider())  // NOSONAR - COM-01: Credential Provider requires heap allocation
+    if (CEIDProvider* pProvider = new (std::nothrow) CEIDProvider())  // NOSONAR - COM-01: Credential Provider requires heap allocation
     {
         hr = pProvider->QueryInterface(riid, ppv);
         pProvider->Release();
