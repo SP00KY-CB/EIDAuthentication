@@ -110,5 +110,17 @@ jobs:
             description = $env:DESCRIPTION
           }
           $uri = 'https://scan.coverity.com/builds?project=' + [uri]::EscapeDataString($env:COVERITY_PROJECT)
-          $response = Invoke-WebRequest -Method Post -Uri $uri -Form $form
-          Write-Host "Coverity Scan responded $($response.StatusCode): $($response.Content)"
+          $response = Invoke-WebRequest -Method Post -Uri $uri -Form $form -SkipHttpErrorCheck
+          $body = [string]$response.Content
+          # A rejected upload is redirected to an HTML page carrying the reason
+          # in an alert box, and still ends in HTTP 200, so check the body.
+          if ($response.StatusCode -lt 300 -and $body -match 'successfully submitted') {
+            Write-Host "Coverity Scan accepted the build: $($body.Trim())"
+            exit 0
+          }
+          $reason = [regex]::Match($body, '(?s)class="alert[^"]*">\s*(?:<button[^>]*>.*?</button>)?\s*(.*?)\s*</div>').Groups[1].Value
+          if (-not $reason) {
+            $reason = ($body -replace '<[^>]+>', ' ' -replace '\s+', ' ').Trim()
+            if ($reason.Length -gt 300) { $reason = $reason.Substring(0, 300) + '...' }
+          }
+          throw "Coverity Scan rejected the upload (HTTP $($response.StatusCode)): $reason"
