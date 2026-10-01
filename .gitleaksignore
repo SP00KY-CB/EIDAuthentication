@@ -1,0 +1,5 @@
+# Gitleaks false positives (fingerprint = commit:file:rule:line).
+# Both are placeholder examples in planning docs that were later deleted:
+# a truncated "YWJjZGVm..." sample export and a "WRONG - never do this" sample key.
+99d2e5caab569e0475e5299d3e24ce44f0e9337d:.planning/TECHSPEC-EIDMigrate.md:generic-api-key:309
+b3ab3ccc5794280a2479b58c871d25729db5b5df:.planning/research/PITFALLS.md:generic-api-key:137

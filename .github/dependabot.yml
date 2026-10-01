@@ -1,10 +1,15 @@
 # Keep GitHub Actions versions current. This repo's supply-chain surface is
 # mostly its workflows (build, release, scanning), so action updates are the
-# one dependency stream worth automating; C++ dependencies are vendored and
-# hash-pinned in Installer/Stage-Minidrivers.ps1 instead.
+# main dependency stream worth automating; C++ dependencies are vendored and
+# hash-pinned in Installer/Stage-Minidrivers.ps1 instead. The pip entry keeps
+# the hash-pinned detect-secrets install used by secret-scan.yml current.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /.github/requirements
     schedule:
       interval: weekly
