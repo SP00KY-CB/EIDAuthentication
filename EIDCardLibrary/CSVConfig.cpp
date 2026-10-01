@@ -285,8 +285,10 @@ HRESULT EID_CSV_SaveConfigToFile(PCWSTR pwszPath, const EID_CSV_CONFIG& config)
     {
         std::wstring dir = wpath.substr(0, lastSlash);
         // M5: create the config directory with a restrictive DACL (Full to SYSTEM/Admins,
-        // Read&Execute to Users), re-applying it if the directory already exists.
-        EnsureLogDirSecured(dir.c_str());
+        // Read&Execute to Users), re-applying it if the directory already exists. Refuse
+        // to write into a directory that is a reparse point or not admin/SYSTEM-owned.
+        if (!EnsureLogDirSecured(dir.c_str()))
+            return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
     }
 
     // Convert to JSON
@@ -308,6 +310,17 @@ HRESULT EID_CSV_SaveConfigToFile(PCWSTR pwszPath, const EID_CSV_CONFIG& config)
         return E_FAIL;
     }
     file.close();
+
+    // The loader only honours a logging.json owned by SYSTEM or Administrators. An
+    // elevated writer's default owner may be its own user SID, so hand the file to
+    // Administrators explicitly (best effort; the loader rejects it otherwise).
+    BYTE adminSid[SECURITY_MAX_SID_SIZE];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
+    DWORD cbAdminSid = sizeof(adminSid);
+    if (CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, adminSid, &cbAdminSid))
+    {
+        SetNamedSecurityInfoW(const_cast<PWSTR>(pwszPath), SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION, adminSid, nullptr, nullptr, nullptr);
+    }
 
     return S_OK;
 }
@@ -599,7 +612,27 @@ void EID_CSV_ApplyPolicyOverrides(EID_CSV_CONFIG& config)  // NOSONAR - COMPLEXI
 HRESULT EID_CSV_LoadConfig(EID_CSV_CONFIG& config)
 {
     // Try JSON file first, then registry, then defaults.
-    HRESULT hr = EID_CSV_LoadConfigFromFile(EID_CSV_CONFIG_PATH, config);
+    //
+    // logging.json is only honoured when both the file and its directory are owned by
+    // SYSTEM or Administrators and neither is a reparse point. C:\ProgramData lets any
+    // user create C:\ProgramData\OpenAccessEID before the installer does; trusting a
+    // file there would let them steer this SYSTEM logger. ETW-only rejection: see the
+    // re-entrancy note at the top of this file.
+    HRESULT hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    if (GetFileAttributesW(EID_CSV_CONFIG_PATH) != INVALID_FILE_ATTRIBUTES)
+    {
+        if (EID_IsAdminOwnedNonReparse(EID_CSV_CONFIG_DIR) &&
+            EID_IsAdminOwnedNonReparse(EID_CSV_CONFIG_PATH))
+        {
+            hr = EID_CSV_LoadConfigFromFile(EID_CSV_CONFIG_PATH, config);
+        }
+        else
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,
+                L"[CONFIG_REJECT] logging.json or its directory is a reparse point or not owned by SYSTEM/Administrators; ignored, falling back to registry/default configuration");
+            hr = HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+        }
+    }
     if (FAILED(hr))
         hr = EID_CSV_LoadConfigFromRegistry(config);
     if (FAILED(hr))

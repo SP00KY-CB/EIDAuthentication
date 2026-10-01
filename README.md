@@ -130,9 +130,9 @@ HKLM\SYSTEM\CurrentControlSet\Control\Lsa\limitblankpassworduse = 0
 
 ## Upgrading from EID Authentication (v1.3.00 and earlier)
 
-This project was renamed to **OpenAccess EID** at v2.0.00. Running the new installer on a machine with EID Authentication installed removes the old version (keeping enrollments) and installs OpenAccess EID in its place. **A reboot is required**: Windows reads its LSA authentication-package list only at boot.
+This project was renamed to **OpenAccess EID** at v2.0.00. Running the new installer on a machine with EID Authentication installed removes the old version and installs OpenAccess EID in its place. **A reboot is required**: Windows reads its LSA authentication-package list only at boot.
 
-**Smart-card enrollments are preserved.** Stored credentials, certificates and the smart-card policies under `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider` are carried over, so users do not re-enrol.
+**Users must re-enrol after upgrading from v2.0.00 or earlier.** The uninstaller of those versions deletes every user's stored credential while unregistering, regardless of its cleanup checkboxes, and the new installer has to run it; the installer warns before it does. Certificates and the smart-card policies under `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider` are carried over. From this release on, uninstalling or upgrading keeps stored credentials; they are removed only when the uninstaller's "Remove EID certificate mappings from users" box is ticked.
 
 What changes, and what needs administrator action:
 
@@ -140,7 +140,7 @@ What changes, and what needs administrator action:
 |---|---|---|---|
 | LSA package | `EIDAuthenticationPackage.dll` | `OpenAccessEIDPackage.dll` | None - the installer swaps the registration. Update any scripts that name the DLL. |
 | Install folder | `C:\Program Files\EID Authentication` | `C:\Program Files\OpenAccess EID` | None. |
-| Logs and `logging.json` | `C:\ProgramData\EIDAuthentication` | `C:\ProgramData\OpenAccessEID` | Re-point any SIEM collector or scheduled task. If the move fails (a file held open), existing logs stay in the old folder and the installer says so. |
+| Logs and `logging.json` | `C:\ProgramData\EIDAuthentication` | `C:\ProgramData\OpenAccessEID` | Re-point any SIEM collector or scheduled task. The old folder is moved only if it and everything in it is owned by SYSTEM/Administrators and contains no junction; otherwise, or if the move fails (a file held open), existing logs stay in the old folder and the installer says so. The installer creates the new folder owned by Administrators, with Full control for SYSTEM and Administrators and read-only for Users. `logging.json` is ignored unless it and the folder are owned by SYSTEM or Administrators (`icacls <path> /setowner *S-1-5-32-544`). |
 | Logging settings | `HKLM\SOFTWARE\EIDAuthentication\LogManager` | `HKLM\SOFTWARE\OpenAccessEID\LogManager` | None - copied across. |
 | Group Policy template | `EIDAuthentication.admx`, namespace `EIDAuthentication.Policies` | `OpenAccessEID.admx`, namespace `OpenAccessEID.Policies` | **Re-apply logging policies** using the new template, and copy it to any central PolicyDefinitions store. Settings made through the old template are not carried over. |
 | Scheduled task | `EID Authentication\Apply Trace Config` | `OpenAccess EID\Apply Trace Config` | None. |

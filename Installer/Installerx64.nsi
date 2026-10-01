@@ -117,14 +117,25 @@ Section "Core" SecCore
     ; keeps the directory's protected DACL and cannot lose an audit trail
     ; half-way. If it fails - a file still held open, or the new directory
     ; already exists - the old directory is left untouched.
+    ; Any user can create C:\ProgramData\EIDAuthentication, so it is only moved
+    ; when it and everything in it is owned by SYSTEM/Administrators and holds
+    ; no junction or symlink; renaming a planted tree into the new location
+    ; would hand the SYSTEM logger the attacker's directory.
     ${If} ${FileExists} "C:\ProgramData\EIDAuthentication\*.*"
       ${IfNot} ${FileExists} "C:\ProgramData\OpenAccessEID\*.*"
-        ClearErrors
-        Rename "C:\ProgramData\EIDAuthentication" "C:\ProgramData\OpenAccessEID"
-        ${If} ${Errors}
-          DetailPrint "WARNING: could not move C:\ProgramData\EIDAuthentication; existing logs remain there."
+        Push "C:\ProgramData\EIDAuthentication"
+        Call IsEIDDataTreeTrusted
+        Pop $R0
+        ${If} $R0 != 1
+          DetailPrint "WARNING: C:\ProgramData\EIDAuthentication is a junction, or it or something in it is not owned by SYSTEM/Administrators; not moved. Existing logs remain there."
         ${Else}
-          DetailPrint "Moved logs and configuration to C:\ProgramData\OpenAccessEID."
+          ClearErrors
+          Rename "C:\ProgramData\EIDAuthentication" "C:\ProgramData\OpenAccessEID"
+          ${If} ${Errors}
+            DetailPrint "WARNING: could not move C:\ProgramData\EIDAuthentication; existing logs remain there."
+          ${Else}
+            DetailPrint "Moved logs and configuration to C:\ProgramData\OpenAccessEID."
+          ${EndIf}
         ${EndIf}
       ${Else}
         DetailPrint "C:\ProgramData\OpenAccessEID already exists; existing logs remain in C:\ProgramData\EIDAuthentication."
@@ -139,6 +150,12 @@ Section "Core" SecCore
     RMDir /r "$SMPROGRAMS\EID Authentication"
     Delete "$DESKTOP\EID Authentication Configuration.lnk"
   ${EndIf}
+
+  ; Create and lock down C:\ProgramData\OpenAccessEID (logs and logging.json)
+  ; before anything runs as SYSTEM against it. Also covers a directory just
+  ; renamed from the legacy location above.
+  DetailPrint "Securing C:\ProgramData\OpenAccessEID..."
+  Call SecureEIDDataDir
 
   ; Create installation directory
   SetOutPath "$INSTDIR"
@@ -265,6 +282,10 @@ Section "Core" SecCore
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "DisplayIcon" "$INSTDIR\cred_provider.ico"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "NoRepair" 1
+  ; Tells a future installer that this version's uninstaller keeps stored
+  ; credentials (only the opt-in cleanup checkbox removes them). Uninstallers of
+  ; v2.0.00 and earlier deleted them during unregistration.
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenAccessEID" "KeepsEnrolmentsOnUninstall" 1
 
   ; Convert total install size from bytes to KB and write to registry
   IntOp $InstallSize $InstallSize / 1024
@@ -308,7 +329,7 @@ Section "Core" SecCore
   SetRebootFlag true
 
   ${If} $MigratedFromLegacy == 1
-    MessageBox MB_OK|MB_ICONEXCLAMATION "EID Authentication has been upgraded to OpenAccess EID.$\n$\nGroup Policy set through the old EIDAuthentication administrative template is NOT carried over. After rebooting, apply the OpenAccess EID template and re-apply any logging policies.$\n$\nSmart-card enrollments are preserved - users do not need to re-enrol.$\n$\nA reboot is required before smart-card logon uses the new version." /SD IDOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "EID Authentication has been upgraded to OpenAccess EID.$\n$\nGroup Policy set through the old EIDAuthentication administrative template is NOT carried over. After rebooting, apply the OpenAccess EID template and re-apply any logging policies.$\n$\nThe EID Authentication uninstaller removed the stored smart-card credentials while unregistering: users must re-enrol their cards.$\n$\nA reboot is required before smart-card logon uses the new version." /SD IDOK
   ${EndIf}
 
 SectionEnd
@@ -692,6 +713,73 @@ Function AddFileSize
 FunctionEnd
 
 ;--------------------------------
+;ProgramData hardening
+;
+; Any user can create a subdirectory of C:\ProgramData, so the product directory
+; (or the legacy C:\ProgramData\EIDAuthentication) may already exist owned by an
+; unprivileged user, be a junction, or hold a planted logging.json or junction.
+; LSASS and the trace consumer write and rotate logs there as SYSTEM, so the
+; installer keeps only a tree that is entirely owned by SYSTEM/Administrators and
+; free of reparse points, and locks the directory down itself.
+
+; Push <path> / Call IsEIDDataTreeTrusted / Pop <result>: "1" when <path> and
+; everything below it is owned by SYSTEM (S-1-5-18) or Administrators
+; (S-1-5-32-544) and nothing is a reparse point (attribute 1024); "0" otherwise,
+; including when the check itself fails. Stops at the first reparse point, so it
+; never walks into a junction's target.
+Function IsEIDDataTreeTrusted
+  Exch $R9
+  nsExec::ExecToLog `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$ErrorActionPreference='Stop'; try { $$ok='S-1-5-18','S-1-5-32-544'; function T($$i) { if (($$i.Attributes -band 1024) -or ($$ok -notcontains (Get-Acl -LiteralPath $$i.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value)) { exit 1 } }; T (Get-Item -LiteralPath '$R9' -Force); Get-ChildItem -LiteralPath '$R9' -Recurse -Force | ForEach-Object { T $$_ }; exit 0 } catch { exit 1 }"`
+  Pop $R9
+  ${If} $R9 == 0
+    StrCpy $R9 1
+  ${Else}
+    StrCpy $R9 0
+  ${EndIf}
+  Exch $R9
+FunctionEnd
+
+; Create C:\ProgramData\OpenAccessEID and its logs directory, owned by
+; Administrators, with inheritance from ProgramData removed: Full control to
+; SYSTEM and Administrators, read-only to Users (the same DACL the runtime
+; applies, EID_LOG_DIR_SDDL). An existing directory that fails
+; IsEIDDataTreeTrusted is moved aside, never adopted: taking ownership of it
+; would launder whatever was planted inside.
+Function SecureEIDDataDir
+  ${If} ${FileExists} "C:\ProgramData\OpenAccessEID"
+    Push "C:\ProgramData\OpenAccessEID"
+    Call IsEIDDataTreeTrusted
+    Pop $R0
+    ${If} $R0 != 1
+      ${GetTime} "" "L" $R1 $R2 $R3 $R4 $R5 $R6 $R7
+      StrCpy $R8 "C:\ProgramData\OpenAccessEID.untrusted-$R3$R2$R1-$R5$R6$R7"
+      ClearErrors
+      Rename "C:\ProgramData\OpenAccessEID" "$R8"
+      ${If} ${Errors}
+        DetailPrint "WARNING: C:\ProgramData\OpenAccessEID is a junction or not owned by SYSTEM/Administrators and could not be moved aside. OpenAccess EID will not write logs there until an administrator removes it."
+        Return
+      ${EndIf}
+      DetailPrint "WARNING: C:\ProgramData\OpenAccessEID was a junction or not owned by SYSTEM/Administrators; moved aside to $R8 for review."
+    ${EndIf}
+  ${EndIf}
+
+  ; Base directory first, so logs is created under the locked-down DACL.
+  CreateDirectory "C:\ProgramData\OpenAccessEID"
+  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "C:\ProgramData\OpenAccessEID" /setowner *S-1-5-32-544'
+  Pop $R0
+  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "C:\ProgramData\OpenAccessEID" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX'
+  Pop $R1
+  CreateDirectory "C:\ProgramData\OpenAccessEID\logs"
+  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "C:\ProgramData\OpenAccessEID\logs" /setowner *S-1-5-32-544'
+  Pop $R2
+  ${If} $R0 != 0
+  ${OrIf} $R1 != 0
+  ${OrIf} $R2 != 0
+    DetailPrint "WARNING: could not fully secure C:\ProgramData\OpenAccessEID (icacls codes $R0/$R1/$R2); OpenAccess EID may refuse to log there."
+  ${EndIf}
+FunctionEnd
+
+;--------------------------------
 ;Initializer function
 
 Function .onInit
@@ -754,8 +842,19 @@ Function .onInit
   ${EndIf}
   StrCmp $0 "" CheckInstallEnd 0
 
+  ; Uninstallers of v2.0.00 and earlier delete every user's stored credential
+  ; while unregistering, whatever the cleanup checkboxes say. Newer ones keep
+  ; them and record that with this marker (written by the Core section).
+  ClearErrors
+  ReadRegDWORD $4 HKLM "$5" "KeepsEnrolmentsOnUninstall"
+  ${If} $4 == 1
+    StrCpy $3 "Smart-card enrollments and stored credentials are kept."
+  ${Else}
+    StrCpy $3 "WARNING: the uninstaller of this older version deletes every user's stored smart-card credential. Users will have to re-enrol their cards afterwards."
+  ${EndIf}
+
   ; Installation found - ask user to uninstall first
-  MessageBox MB_YESNO "$6 is already installed at:$\n$0$\n$\nIt must be uninstalled first. Smart-card enrollments and stored credentials are kept.$\n$\nUninstall it now?" /SD IDYES IDYES DoUninstall IDNO AbortInstall
+  MessageBox MB_YESNO "$6 is already installed at:$\n$0$\n$\nIt must be uninstalled first. $3$\n$\nUninstall it now?" /SD IDYES IDYES DoUninstall IDNO AbortInstall
 
   DoUninstall:
     InitPluginsDir

@@ -325,8 +325,10 @@ void EIDCredentialProviderDllRegister()
 		L"ThreadingModel",REG_SZ, L"Apartment",sizeof(L"Apartment"));
 }
 
-BOOL LsaEIDRemoveAllStoredCredential();
-
+// Unregistering must never delete stored credentials: the uninstaller runs this on every
+// uninstall AND on every upgrade (the old uninstaller runs first), and enrolments are meant
+// to survive both. Credential removal is opt-in only, via the CleanupLsaCredentials export
+// (uninstaller checkbox "Remove EID certificate mappings from users").
 void EIDCredentialProviderDllUnRegister()
 {
 	RegDeleteTree(HKEY_CLASSES_ROOT, L"CLSID\\{B4866A0A-DB08-4835-A26F-414B46F3244C}");
@@ -334,7 +336,6 @@ void EIDCredentialProviderDllUnRegister()
 		L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Providers\\{B4866A0A-DB08-4835-A26F-414B46F3244C}");
 	RegDeleteTree(HKEY_LOCAL_MACHINE, 
 		L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Provider Filters\\{B4866A0A-DB08-4835-A26F-414B46F3244C}");
-	LsaEIDRemoveAllStoredCredential();
 }
 
 void EIDConfigurationWizardDllRegister()
