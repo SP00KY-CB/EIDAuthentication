@@ -543,6 +543,12 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 		}
 
 		// Calculate password size
+		if (usPasswordLen > 0 && szPassword == nullptr)
+		{
+			dwError = ERROR_INVALID_PARAMETER;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"password length without a buffer");
+			__leave;
+		}
 		if (usPasswordLen > 0)
 		{
 			usPasswordSize = usPasswordLen;
@@ -561,6 +567,18 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 		else
 		{
 			usPasswordSize = 0;
+		}
+		// A blank password cannot be sealed (enrolment already refuses it).
+		// It used to reach EncryptPasswordAndSaveIt with a NULL buffer and
+		// wcslen(NULL) there crashed LSASS - reachable by any user with an
+		// enrolment who sets a blank password (SpAcceptCredentials /
+		// PasswordChangeNotify -> UpdateCredential). Refuse instead; the stored
+		// credential keeps the previous password until a non-blank one is set.
+		if (usPasswordSize == 0)
+		{
+			dwError = ERROR_INVALID_PARAMETER;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"blank password refused");
+			__leave;
 		}
 
 		// Use certificate-based encryption for all passwords (including empty)
@@ -1693,6 +1711,11 @@ BOOL CStoredCredentialManager::EncryptPasswordAndSaveIt(__in HCRYPTKEY hKey, __i
 	__try
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Enter");
+		if (!szPassword)
+		{
+			dwError = ERROR_INVALID_PARAMETER;
+			__leave;
+		}
 		dwPasswordSize = (DWORD) (dwPasswordLen?dwPasswordLen:wcslen(szPassword)* sizeof(WCHAR));
 		dwSize = sizeof(DWORD);
 		if (!CryptGetKeyParam(hKey, KP_BLOCKLEN, (PBYTE) &dwBlockLen, &dwSize, 0))
