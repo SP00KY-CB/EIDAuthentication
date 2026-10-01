@@ -1,0 +1,92 @@
+name: Security report
+
+# Collects every open finding into one report for AI-assisted remediation
+# (tools/security_report.py): GitHub code scanning alerts from all the tools
+# that upload SARIF here (CodeQL, Corgea, MegaLinter's linters, KICS,
+# BinSkim, Scorecard, Gitleaks, Kingfisher, 2MS) and SonarCloud's open
+# vulnerabilities, bugs and security hotspots. Findings at the same file and
+# line are merged, ordered by severity and shown with a source excerpt. The
+# report opens with instructions for the AI assistant it is given to.
+#
+# Output: the "security-report" artifact (security-report.md and
+# security-report.json) and a summary on the run page.
+#
+# Runs weekly after the Tuesday scans, and on demand from the Actions tab
+# with a choice of minimum severity.
+on:
+  schedule:
+    - cron: '17 7 * * 3'   # Wednesdays
+  workflow_dispatch:
+    inputs:
+      min_severity:
+        description: Lowest severity to include
+        type: choice
+        options: [critical, high, medium, low, note]
+        default: low
+      include_code_quality:
+        description: Also include SonarCloud code smells
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: security-report
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: Build the security report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read          # source excerpts
+      security-events: read   # code scanning alerts
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+
+      - name: Collect findings
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MIN_SEVERITY: ${{ inputs.min_severity || 'low' }}
+          INCLUDE_CODE_QUALITY: ${{ inputs.include_code_quality && '--include-code-quality' || '' }}
+        run: |
+          # shellcheck disable=SC2086  # INCLUDE_CODE_QUALITY is empty or one flag
+          python3 tools/security_report.py \
+            --min-severity "$MIN_SEVERITY" $INCLUDE_CODE_QUALITY \
+            --root . --out-dir security-report
+
+      - name: Summarise
+        if: always() && hashFiles('security-report/security-report.json') != ''
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          data = json.load(open("security-report/security-report.json"))
+          meta, groups = data["meta"], data["locations"]
+          order = ["critical", "high", "medium", "low", "note"]
+          counts = {s: sum(1 for g in groups if g["severity"] == s) for s in order}
+          print(f"## Security report: {meta['finding_count']} findings at {len(groups)} locations\n")
+          print("| " + " | ".join(order) + " |")
+          print("|" + "---|" * len(order))
+          print("| " + " | ".join(str(counts[s]) for s in order) + " |\n")
+          for error in meta["errors"]:
+              print(f"- :warning: {error}")
+          top = [g for g in groups if g["severity"] in ("critical", "high")][:25]
+          if top:
+              print("\n### Critical and high (first 25)\n")
+              for g in top:
+                  where = f"{g['path']}:{g['start_line']}" if g["start_line"] else (g["path"] or "-")
+                  rules = ", ".join(sorted({f["rule"] for f in g["findings"]}))
+                  print(f"- **{g['severity']}** `{where}`: {rules} ({', '.join(g['tools'])})")
+          print("\nDownload the **security-report** artifact for the full report.")
+          PY
+
+      - name: Upload the report
+        if: always() && hashFiles('security-report/security-report.md') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: security-report
+          path: security-report
+          retention-days: 30
