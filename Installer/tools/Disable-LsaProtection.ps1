@@ -64,8 +64,57 @@ if (-not $isAdmin) {
 
 $LsaKey        = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
 $AuditKey      = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LSASS.exe'
-$BackupDir     = Join-Path $env:ProgramData 'OpenAccessEID\LsaProtectionBackup'
+$DataDir       = Join-Path $env:ProgramData 'OpenAccessEID'
+$BackupDir     = Join-Path $DataDir 'LsaProtectionBackup'
 $BackupFile    = Join-Path $BackupDir 'RunAsPPL.backup.txt'
+
+# The backup decides what -Restore writes into the LSA key, so it is only
+# written or read where a standard user cannot have planted or changed it:
+# C:\ProgramData\OpenAccessEID, LsaProtectionBackup and the backup file must
+# each be a real folder or file (not a junction, symbolic link or other
+# reparse point), owned by SYSTEM or Administrators, and give nobody else a
+# right to write, delete, change permissions or take ownership. Checked
+# outermost first: once a folder passes, nobody else can swap what is in it.
+# Returns $null when the item passes, else the reason it does not.
+function Get-UntrustedReason {
+    param([string] $LiteralPath)
+    $item = Get-Item -LiteralPath $LiteralPath -Force
+    if ((([int] $item.Attributes) -band 0x400) -ne 0) {
+        return "$LiteralPath is a junction, symbolic link or other reparse point"
+    }
+    $acl = Get-Acl -LiteralPath $LiteralPath
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) {
+        return "$LiteralPath is owned by $owner, not by SYSTEM or Administrators"
+    }
+    # WriteData/CreateFiles, AppendData/CreateDirectories, WriteExtendedAttributes,
+    # DeleteSubdirectoriesAndFiles, WriteAttributes, Delete, ChangePermissions,
+    # TakeOwnership, GENERIC_ALL, GENERIC_WRITE (as Test-EIDDirectoryTree.ps1).
+    $writeMask = 0x500D0156
+    foreach ($ace in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($ace.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
+        $sid = $ace.IdentityReference.Value
+        if (@('S-1-5-18', 'S-1-5-32-544', 'S-1-3-0') -contains $sid) { continue }
+        if (([int] $ace.FileSystemRights -band $writeMask) -ne 0) {
+            return "$LiteralPath lets $sid modify it"
+        }
+    }
+    return $null
+}
+
+# Throws unless $DataDir, $BackupDir and (with -IncludeFile) $BackupFile pass
+# Get-UntrustedReason.
+function Assert-TrustedBackupLocation {
+    param([switch] $IncludeFile)
+    $paths = @($DataDir, $BackupDir)
+    if ($IncludeFile) { $paths += $BackupFile }
+    foreach ($p in $paths) {
+        $reason = Get-UntrustedReason -LiteralPath $p
+        if ($reason) {
+            throw "Refusing to use the LSA Protection backup: $reason. Nothing was changed. Check $DataDir by hand (a standard user may have planted it), remove what does not belong there, then run this script again."
+        }
+    }
+}
 
 function Write-Banner {
     param([string] $Text, [ConsoleColor] $Color = 'Yellow')
@@ -188,13 +237,24 @@ function Save-CurrentState {
     # Never overwrite an existing backup: it records the state from before LSA
     # Protection was first turned off, which is what -Restore must put back. A
     # second run (say with -EnableAuditMode) would otherwise record "0".
+    # The installer creates $DataDir with permissions only SYSTEM and
+    # Administrators can change; LsaProtectionBackup inherits them.
+    if (-not (Test-Path -LiteralPath $DataDir)) {
+        throw "$DataDir does not exist. Install (or reinstall) OpenAccess EID, which creates it with the right permissions, then run this script again. Nothing was changed."
+    }
     if (Test-Path -LiteralPath $BackupFile) {
+        Assert-TrustedBackupLocation -IncludeFile
         Write-Host "  Keeping the existing backup of the original state: $BackupFile" -ForegroundColor Green
         return
     }
-    if (-not (Test-Path $BackupDir)) {
-        New-Item -Path $BackupDir -ItemType Directory -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $BackupDir)) {
+        $reason = Get-UntrustedReason -LiteralPath $DataDir
+        if ($reason) {
+            throw "Refusing to write the LSA Protection backup: $reason. Nothing was changed."
+        }
+        New-Item -Path $BackupDir -ItemType Directory | Out-Null
     }
+    Assert-TrustedBackupLocation
     $lines = @(
         "# OpenAccess EID - LSA Protection state backup",
         "# Created: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ') UTC",
@@ -205,7 +265,7 @@ function Save-CurrentState {
         "SecureBoot       = $($State.SecureBoot)",
         "OSVersion        = $($State.OSVersion)"
     )
-    Set-Content -Path $BackupFile -Value $lines -Encoding UTF8
+    Set-Content -LiteralPath $BackupFile -Value $lines -Encoding UTF8
     Write-Host "  Backed up prior state to: $BackupFile" -ForegroundColor Green
 }
 
@@ -288,6 +348,8 @@ function Invoke-Restore {
     Write-Banner 'Restore mode: re-enable LSA Protection' 'Cyan'
     $backup = $null
     if (Test-Path -LiteralPath $BackupFile) {
+        # A planted "backup" could keep LSA Protection off; refuse it.
+        Assert-TrustedBackupLocation -IncludeFile
         $backup = Read-StateBackup
         Write-Host "Backup found at $BackupFile" -ForegroundColor Cyan
         Write-Host "Will restore the values recorded there:" -ForegroundColor Cyan

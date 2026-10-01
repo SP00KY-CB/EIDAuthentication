@@ -93,6 +93,53 @@
   ; section then tells the operator that users must re-enrol.
   Var /GLOBAL EnrolmentsWiped
 
+  ; The folder the previous version's uninstaller has just run over (.onInit),
+  ; once it finished successfully. PrepareInstallDir accepts that folder even
+  ; when the uninstaller left something in it.
+  Var /GLOBAL PrevInstallDir
+
+  ; Set by NeutraliseOldUnregister when it put the substitute package DLL in
+  ; place: the System32 path, and where the original was renamed to ("" when
+  ; there was no original). UndoNeutraliseOldUnregister puts things back if the
+  ; old uninstaller is cancelled or fails.
+  Var /GLOBAL NeutralisedDll
+  Var /GLOBAL NeutralisedAside
+
+  ; Local security policy that uninstallers of every version so far delete
+  ; (scforceoption, scremoveoption) and the Smart Card Removal Policy service
+  ; start type they reset. Saved before the old uninstaller runs and put back
+  ; afterwards - see SaveLocalSmartCardPolicy.
+  Var /GLOBAL SavedScForceOption
+  Var /GLOBAL SavedScForceOptionType
+  Var /GLOBAL SavedScRemoveOption
+  Var /GLOBAL SavedScRemoveOptionType
+  Var /GLOBAL SavedScPolicySvcStart
+
+;--------------------------------
+;Constants and macros
+
+  ; The DACL the runtime applies to its log directory (EID_LOG_DIR_SDDL): owner
+  ; Administrators; protected (nothing inherited from the parent); Full control
+  ; for SYSTEM and Administrators and read/execute for Users, inherited by
+  ; everything below. Also used for the installation folder.
+  !define OAEID_DIR_SDDL "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
+  ; The same without the owner, for a token that may not assign Administrators
+  ; as owner (CreateProtectedDir falls back to it; LockEIDDirectory then sets
+  ; the owner).
+  !define OAEID_DIR_SDDL_DACL "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
+
+  ; Uninstaller: an install or upgrade that has not been followed by a reboot
+  ; has queued "<name>.oaeid-new -> <name>" (InstallSystemDll), which would put
+  ; the DLL back after this uninstall. Delete the staged copy (now, or at the
+  ; reboot), and queue a delete of <name> itself: PendingFileRenameOperations
+  ; is processed in the order the entries were queued, so that delete runs
+  ; after the rename. Call with x64 file system redirection disabled.
+  !macro OAEID_CancelStagedDll NAME
+    Delete /REBOOTOK "$SYSDIR\${NAME}.oaeid-new"
+    ; MOVEFILE_DELAY_UNTIL_REBOOT (4) with no destination: delete at the reboot.
+    System::Call 'kernel32::MoveFileExW(w "$SYSDIR\${NAME}", p 0, i 4) i .r0'
+  !macroend
+
 ;--------------------------------
 ;Uninstaller Variables
 
@@ -163,44 +210,14 @@ Section "Core" SecCore
   DetailPrint "Securing C:\ProgramData\OpenAccessEID..."
   Call SecureEIDDataDir
 
-  ; Create installation directory and lock it down before anything is put in it.
-  ; EIDTraceConsumer.exe runs from here as SYSTEM and the System32 DLLs are
-  ; copied from here, and /D= can point $INSTDIR anywhere - including a folder a
-  ; standard user can write to. So whatever the path, give it the Program Files
-  ; treatment: owner Administrators, inheritance removed, Full control for
-  ; SYSTEM and Administrators, read/execute for Users. A junction, or a folder
-  ; that already holds something a standard user owns or can modify, is refused.
-  CreateDirectory "$INSTDIR"
-  Push "$INSTDIR"
-  Call IsReparsePoint
-  Pop $R0
-  ${If} $R0 == 1
-    Push "ERROR: the installation folder $INSTDIR is a junction or symbolic link. Installation stopped; choose another folder."
-    Call InstallLog
-    MessageBox MB_OK|MB_ICONSTOP "The installation folder$\n$INSTDIR$\nis a junction or symbolic link. OpenAccess EID runs a SYSTEM service from this folder, so it will not install there.$\n$\nChoose another folder." /SD IDOK
-    Abort
-  ${EndIf}
-  Push "$INSTDIR"
-  Call LockEIDDirectory
-  Pop $R0
-  ${If} $R0 != 1
-    Push "ERROR: could not restrict the permissions of $INSTDIR. Installation stopped."
-    Call InstallLog
-    MessageBox MB_OK|MB_ICONSTOP "The permissions of the installation folder$\n$INSTDIR$\ncould not be restricted to SYSTEM and Administrators. OpenAccess EID runs a SYSTEM service from this folder, so it will not install there." /SD IDOK
-    Abort
-  ${EndIf}
-  Push "$INSTDIR"
-  Call IsEIDDataTreeTrusted
-  Pop $R0
-  ${If} $R0 == 0
-    Push "ERROR: $INSTDIR already contains files or folders that a standard user owns or can modify, or a junction. Installation stopped."
-    Call InstallLog
-    MessageBox MB_OK|MB_ICONSTOP "The installation folder$\n$INSTDIR$\nalready contains files or folders that are not owned by SYSTEM/Administrators, that other users can modify, or a junction. OpenAccess EID runs a SYSTEM service from this folder, so it will not install there.$\n$\nChoose an empty folder, or remove those items first." /SD IDOK
-    Abort
-  ${ElseIf} $R0 == 2
-    Push "WARNING: could not check the contents of $INSTDIR (PowerShell did not run, or runs in constrained language mode); its permissions have been restricted."
-    Call InstallLog
-  ${EndIf}
+  ; Create the installation directory and lock it down before anything is put
+  ; in it. EIDTraceConsumer.exe runs from here as SYSTEM and the System32 DLLs
+  ; are copied from here, and /D= (or the InstallPath registry value) can point
+  ; $INSTDIR anywhere - including a folder a standard user can write to, or one
+  ; that is not ours at all. PrepareInstallDir checks the folder BEFORE it
+  ; changes any permission, and stops the installation if it is not a new or
+  ; empty folder or a previous OpenAccess EID installation.
+  Call PrepareInstallDir
   SetOutPath "$INSTDIR"
 
   ; Install DLL files to Program Files
@@ -674,6 +691,11 @@ Section "Uninstall"
   Delete /REBOOTOK "$SYSDIR\OpenAccessEIDPackage.dll"
   Delete /REBOOTOK "$SYSDIR\EIDCredentialProvider.dll"
   Delete /REBOOTOK "$SYSDIR\EIDPasswordChangeNotification.dll"
+  ; Uninstalling before the reboot that follows an install or upgrade: cancel
+  ; the queued "<name>.oaeid-new -> <name>" rename (see the macro).
+  !insertmacro OAEID_CancelStagedDll "OpenAccessEIDPackage.dll"
+  !insertmacro OAEID_CancelStagedDll "EIDCredentialProvider.dll"
+  !insertmacro OAEID_CancelStagedDll "EIDPasswordChangeNotification.dll"
 
   ; Delete ETW log files
   Delete /REBOOTOK "$SYSDIR\LogFiles\WMI\EIDCredentialProvider.etl"
@@ -708,11 +730,31 @@ Section "Uninstall"
   ; Disable-LsaProtection.ps1 keeps its backup of the original RunAsPPL values
   ; until -Restore has put them back. If the backup is still there, LSA
   ; protection is most likely still off: keep a copy of the script next to the
-  ; backup (C:\ProgramData\OpenAccessEID is writable only by SYSTEM and
-  ; Administrators) and tell the administrator how to restore it.
+  ; backup and tell the administrator how to restore it.
+  ; The copy is written only when C:\ProgramData\OpenAccessEID and everything
+  ; in it (LsaProtectionBackup included) is owned by SYSTEM/Administrators,
+  ; holds no junction or symbolic link and cannot be changed by other users
+  ; (Test-EIDDirectoryTree.ps1). Otherwise a planted LsaProtectionBackup - a
+  ; junction, say - would have this elevated uninstaller write a script
+  ; wherever it points. Once that check has passed, nobody but an
+  ; administrator can change the folder, so writing to it by path is safe.
   ${If} ${FileExists} "C:\ProgramData\OpenAccessEID\LsaProtectionBackup\RunAsPPL.backup.txt"
+    File "/oname=$PLUGINSDIR\Test-EIDDirectoryTree.ps1" "scripts\Test-EIDDirectoryTree.ps1"
+    Push "$PLUGINSDIR\Test-EIDDirectoryTree.ps1"
+    System::Call 'kernel32::SetEnvironmentVariable(t "OAEID_SCRIPT", t s)'
+    Push "C:\ProgramData\OpenAccessEID"
+    System::Call 'kernel32::SetEnvironmentVariable(t "OAEID_PATH", t s)'
+    ${DisableX64FSRedirection}
+    nsExec::ExecToLog /TIMEOUT=120000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& ([ScriptBlock]::Create([IO.File]::ReadAllText($$env:OAEID_SCRIPT))) -Path $$env:OAEID_PATH; exit $$LASTEXITCODE"`
+    Pop $0
+    ${EnableX64FSRedirection}
     ClearErrors
-    CopyFiles /SILENT "$INSTDIR\tools\Disable-LsaProtection.ps1" "C:\ProgramData\OpenAccessEID\LsaProtectionBackup\Disable-LsaProtection.ps1"
+    ${If} $0 == 10
+      CopyFiles /SILENT "$INSTDIR\tools\Disable-LsaProtection.ps1" "C:\ProgramData\OpenAccessEID\LsaProtectionBackup\Disable-LsaProtection.ps1"
+    ${Else}
+      DetailPrint "C:\ProgramData\OpenAccessEID is a junction, holds one, or holds something not owned by SYSTEM/Administrators or that other users can change, or it could not be checked (result $0); not writing into it."
+      SetErrors
+    ${EndIf}
     ${If} ${Errors}
       DetailPrint "WARNING: LSA protection (RunAsPPL) was turned off with Disable-LsaProtection.ps1 and not restored, and the script could not be kept. Restore the values recorded in C:\ProgramData\OpenAccessEID\LsaProtectionBackup\RunAsPPL.backup.txt by hand, then reboot."
       MessageBox MB_OK|MB_ICONEXCLAMATION "LSA protection (RunAsPPL) was turned off with Disable-LsaProtection.ps1 and has not been restored.$\n$\nRestore the values recorded in$\nC:\ProgramData\OpenAccessEID\LsaProtectionBackup\RunAsPPL.backup.txt$\nunder HKLM\SYSTEM\CurrentControlSet\Control\Lsa, then reboot." /SD IDOK
@@ -956,6 +998,8 @@ Function NeutraliseOldUnregister
         ${If} $R7 != ""
           Delete /REBOOTOK "$R7"
         ${EndIf}
+        StrCpy $NeutralisedDll $R9
+        StrCpy $NeutralisedAside $R7
         Push "Substituted this version's unregistration step for the old uninstaller's ($R9), so stored credentials are kept."
         Call InstallLog
       ${EndIf}
@@ -970,22 +1014,25 @@ Function NeutraliseOldUnregister
 FunctionEnd
 
 ;--------------------------------
-;ProgramData hardening
+;ProgramData and installation folder hardening
 ;
 ; Any user can create a subdirectory of C:\ProgramData, so the product directory
 ; (or the legacy C:\ProgramData\EIDAuthentication) may already exist owned by an
 ; unprivileged user, be a junction, or hold a planted logging.json or junction.
-; LSASS and the trace consumer write and rotate logs there as SYSTEM, so the
-; installer keeps only a tree that is entirely owned by SYSTEM/Administrators,
-; writable by nobody else and free of reparse points, and locks the directory
-; down itself. The checks and the lock-down are PowerShell scripts from
-; Installer\scripts, extracted to $PLUGINSDIR.
+; LSASS and the trace consumer write and rotate logs there as SYSTEM, and the
+; trace consumer runs as SYSTEM from the installation folder. So the installer
+; creates both folders with their protected DACL already in place, in the same
+; call that creates them (CreateProtectedDir), and keeps an existing folder only
+; when it can show that the folder is ours and that nothing in it can be changed
+; by anyone but SYSTEM and Administrators. Permissions are changed natively,
+; through a handle opened on the folder itself (LockEIDDirectory), never by
+; path. The trust check is a PowerShell script from Installer\scripts,
+; extracted to $PLUGINSDIR.
 
-; Extracts the installer's PowerShell helpers to $PLUGINSDIR.
+; Extracts the installer's PowerShell helper to $PLUGINSDIR.
 Function ExtractEIDScripts
   InitPluginsDir
   File "/oname=$PLUGINSDIR\Test-EIDDirectoryTree.ps1" "scripts\Test-EIDDirectoryTree.ps1"
-  File "/oname=$PLUGINSDIR\Lock-EIDDirectory.ps1" "scripts\Lock-EIDDirectory.ps1"
 FunctionEnd
 
 ; Push <script file name> / Push <path> / Call RunEIDScript / Pop <result>
@@ -1011,26 +1058,6 @@ Function RunEIDScript
   Exch $R0
 FunctionEnd
 
-; Push <path> / Call IsReparsePoint / Pop <"1" | "0">: "1" when <path> itself
-; is a junction, symbolic link or other reparse point. Does not follow it.
-Function IsReparsePoint
-  Exch $R9
-  Push $R8
-  System::Call 'kernel32::GetFileAttributes(t R9) i .R8'
-  ${If} $R8 = -1
-    StrCpy $R9 0
-  ${Else}
-    IntOp $R8 $R8 & 0x400
-    ${If} $R8 <> 0
-      StrCpy $R9 1
-    ${Else}
-      StrCpy $R9 0
-    ${EndIf}
-  ${EndIf}
-  Pop $R8
-  Exch $R9
-FunctionEnd
-
 ; Push <path> / Call IsEIDDataTreeTrusted / Pop <result>:
 ;   "1" <path> and everything below it is owned by SYSTEM (S-1-5-18) or
 ;       Administrators (S-1-5-32-544), nothing is a reparse point, and no ACE
@@ -1038,8 +1065,8 @@ FunctionEnd
 ;       delete, change permissions or take ownership;
 ;   "0" not trusted (including an ACL that cannot be read);
 ;   "2" the check could not run: PowerShell missing, blocked, timed out or in
-;       constrained language mode. That is neither answer - callers must not
-;       move anything aside on it.
+;       constrained language mode. That is neither answer: it does not show
+;       that the folder can be trusted.
 ; The check stops at the first reparse point, so it never walks into a
 ; junction's target. See Installer\scripts\Test-EIDDirectoryTree.ps1.
 Function IsEIDDataTreeTrusted
@@ -1058,48 +1085,141 @@ Function IsEIDDataTreeTrusted
   Exch $R9
 FunctionEnd
 
+; Push <directory> / Call CreateProtectedDir / Pop <result>
+; Creates <directory> (its parent must exist) with the protected DACL
+; ${OAEID_DIR_SDDL} passed to CreateDirectoryW itself, so the folder never
+; exists, even for an instant, with permissions that would let a standard user
+; add anything to it. Owner Administrators is asked for in the same call; a
+; token that may not assign it (ERROR_INVALID_OWNER) gets the same DACL without
+; it, and the caller then sets the owner with LockEIDDirectory.
+;   "1"      created;
+;   "exists" ERROR_ALREADY_EXISTS: something (a folder, a file or a junction)
+;            already has that name - it was NOT created by this call;
+;   "0"      any other failure.
+Function CreateProtectedDir
+  Exch $R9
+  Push $R8
+  Push $R7
+  Push $R6
+  Push $R5
+  Push $R4
+  StrCpy $R4 0
+  ${Do}
+    ${If} $R4 == 0
+      Push "${OAEID_DIR_SDDL}"
+    ${Else}
+      Push "${OAEID_DIR_SDDL_DACL}"
+    ${EndIf}
+    ; SDDL_REVISION_1
+    System::Call 'advapi32::ConvertStringSecurityDescriptorToSecurityDescriptorW(w s, i 1, *p .R8, p 0) i .R7'
+    ${If} $R7 = 0
+      StrCpy $R5 "0"
+      ${ExitDo}
+    ${EndIf}
+    ; SECURITY_ATTRIBUTES { nLength, lpSecurityDescriptor, bInheritHandle }
+    System::Call '*(&l4, p R8, i 0) p .R6'
+    System::Call 'kernel32::CreateDirectoryW(w R9, p R6) i .R7 ?e'
+    Pop $R5
+    System::Free $R6
+    System::Call 'kernel32::LocalFree(p R8)'
+    ${If} $R7 <> 0
+      StrCpy $R5 "1"
+      ${ExitDo}
+    ${ElseIf} $R5 = 183
+      StrCpy $R5 "exists"
+      ${ExitDo}
+    ${ElseIf} $R5 = 1307
+    ${AndIf} $R4 == 0
+      StrCpy $R4 1
+    ${Else}
+      StrCpy $R5 "0"
+      ${ExitDo}
+    ${EndIf}
+  ${Loop}
+  StrCpy $R9 $R5
+  Pop $R4
+  Pop $R5
+  Pop $R6
+  Pop $R7
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
 ; Push <directory> / Call LockEIDDirectory / Pop <"1" | "0">
 ; Owner Administrators and a protected DACL that replaces every other ACE: Full
 ; control for SYSTEM and Administrators, read/execute for Users, inherited by
-; everything below (the runtime's EID_LOG_DIR_SDDL). PowerShell writes owner and
-; DACL in one call; when that fails or cannot run, icacls does it in two (which
-; leaves any extra explicit ACE in place - the trust check afterwards catches
-; that). Never touches a reparse point.
+; everything below (${OAEID_DIR_SDDL}, the runtime's EID_LOG_DIR_SDDL).
+; The folder is opened once with FILE_FLAG_OPEN_REPARSE_POINT, checked through
+; that handle to be a directory and not a junction, symbolic link or other
+; reparse point, and owner and DACL are written in one call through the same
+; handle. So the folder that is checked is the folder that is changed: swapping
+; it for a junction after the check changes nothing.
 Function LockEIDDirectory
   Exch $R9
   Push $R8
-  Push $R9
-  Call IsReparsePoint
-  Pop $R8
-  ${If} $R8 == 1
-    Push "WARNING: not changing the permissions of $R9: it is a junction or symbolic link."
+  Push $R7
+  Push $R6
+  Push $R5
+  Push $R4
+  Push $R3
+  Push $R2
+  Push $R1
+  Push $R0
+  StrCpy $R4 0
+  ; FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC | WRITE_OWNER; share
+  ; read/write/delete; OPEN_EXISTING; FILE_FLAG_BACKUP_SEMANTICS (needed to
+  ; open a directory) | FILE_FLAG_OPEN_REPARSE_POINT.
+  System::Call 'kernel32::CreateFileW(w R9, i 0xE0080, i 7, p 0, i 3, i 0x02200000, p 0) p .R8 ?e'
+  Pop $R7
+  ${If} $R8 = -1
+  ${OrIf} $R8 == 4294967295
+  ${OrIf} $R8 = 0
+    Push "WARNING: could not open $R9 to change its permissions (error $R7)."
     Call InstallLog
-    StrCpy $R9 0
   ${Else}
-    Push "Lock-EIDDirectory.ps1"
-    Push $R9
-    Call RunEIDScript
-    Pop $R8
-    ${If} $R8 == 10
-      StrCpy $R9 1
-    ${Else}
-      Push "Could not set the permissions of $R9 with PowerShell (result $R8); using icacls."
+    ; BY_HANDLE_FILE_INFORMATION is 52 bytes; dwFileAttributes comes first.
+    System::Call '*(&i52) p .R6'
+    System::Call 'kernel32::GetFileInformationByHandle(p R8, p R6) i .R7'
+    StrCpy $R5 0
+    ${If} $R7 <> 0
+      System::Call '*$R6(i .R5)'
+    ${EndIf}
+    System::Free $R6
+    IntOp $R7 $R5 & 0x410
+    ${If} $R7 <> 0x10
+      Push "WARNING: not changing the permissions of $R9: it is not a directory, or it is a junction, symbolic link or other reparse point."
       Call InstallLog
-      nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$R9" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX'
-      Pop $R8
-      ${If} $R8 == 0
-        nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$R9" /setowner *S-1-5-32-544'
-        Pop $R8
-      ${EndIf}
-      ${If} $R8 == 0
-        StrCpy $R9 1
-      ${Else}
-        Push "WARNING: icacls could not secure $R9 (code $R8)."
-        Call InstallLog
-        StrCpy $R9 0
+    ${Else}
+      Push "${OAEID_DIR_SDDL}"
+      System::Call 'advapi32::ConvertStringSecurityDescriptorToSecurityDescriptorW(w s, i 1, *p .R3, p 0) i .R7'
+      ${If} $R7 <> 0
+        System::Call 'advapi32::GetSecurityDescriptorOwner(p R3, *p .R2, *i .R1) i .R7'
+        System::Call 'advapi32::GetSecurityDescriptorDacl(p R3, *i .R1, *p .R0, *i .R1) i .R6'
+        ${If} $R7 <> 0
+        ${AndIf} $R6 <> 0
+          ; SE_FILE_OBJECT; OWNER_ | DACL_ | PROTECTED_DACL_SECURITY_INFORMATION
+          System::Call 'advapi32::SetSecurityInfo(p R8, i 1, i 0x80000005, p R2, p 0, p R0, p 0) i .R7'
+          ${If} $R7 = 0
+            StrCpy $R4 1
+          ${Else}
+            Push "WARNING: could not set the owner and permissions of $R9 (error $R7)."
+            Call InstallLog
+          ${EndIf}
+        ${EndIf}
+        System::Call 'kernel32::LocalFree(p R3)'
       ${EndIf}
     ${EndIf}
+    System::Call 'kernel32::CloseHandle(p R8)'
   ${EndIf}
+  StrCpy $R9 $R4
+  Pop $R0
+  Pop $R1
+  Pop $R2
+  Pop $R3
+  Pop $R4
+  Pop $R5
+  Pop $R6
+  Pop $R7
   Pop $R8
   Exch $R9
 FunctionEnd
@@ -1145,110 +1265,505 @@ FunctionEnd
 ; Push <path> / Call WarnNotMovedAside
 Function WarnNotMovedAside
   Exch $R9
-  Push "WARNING: $R9 is a junction, is not owned by SYSTEM/Administrators or can be modified by other users, and could not be moved aside. OpenAccess EID will NOT write log files until an administrator deletes or renames it and runs this installer again."
+  Push "WARNING: $R9 is a junction, is not owned by SYSTEM/Administrators, can be modified by other users or could not be checked, and could not be moved aside. OpenAccess EID will NOT write log files until an administrator deletes or renames it and runs this installer again."
   Call InstallLog
-  MessageBox MB_OK|MB_ICONEXCLAMATION "$R9$\n$\nis a junction, is not owned by SYSTEM/Administrators, or can be modified by other users, and could not be moved aside (something may be holding it open).$\n$\nOpenAccess EID will NOT write log files until an administrator deletes or renames it and runs this installer again. Smart-card logon is not affected." /SD IDOK
+  MessageBox MB_OK|MB_ICONEXCLAMATION "$R9$\n$\nis a junction, is not owned by SYSTEM/Administrators, can be modified by other users or could not be checked, and could not be moved aside (something may be holding it open).$\n$\nOpenAccess EID will NOT write log files until an administrator deletes or renames it and runs this installer again. Smart-card logon is not affected." /SD IDOK
   Pop $R9
 FunctionEnd
 
 ; Create C:\ProgramData\OpenAccessEID and its logs directory, owned by
 ; Administrators, with inheritance from ProgramData removed: Full control to
 ; SYSTEM and Administrators, read-only to Users (the same DACL the runtime
-; applies, EID_LOG_DIR_SDDL). An existing directory that fails
-; IsEIDDataTreeTrusted is moved aside, never adopted: taking ownership of it
-; would launder whatever was planted inside. Only the base directory is created
-; before the lock-down; logs is created afterwards, so it inherits the protected
-; DACL and is owned by whoever runs the installer (Administrators or SYSTEM) -
-; it is never handed over with /setowner, which would give Administrators'
-; ownership to something a standard user created in the meantime.
+; applies, EID_LOG_DIR_SDDL).
+;   - The folder is created by CreateProtectedDir, with that DACL from the
+;     first instant: no standard user can ever add anything to it, so there is
+;     nothing to check or move out of it afterwards.
+;   - If the name is already taken, the existing folder is kept only when it
+;     is a real directory and IsEIDDataTreeTrusted shows that it and
+;     everything in it is owned by SYSTEM/Administrators, holds no junction
+;     and cannot be changed by anyone else. Nobody else can then change it, so
+;     its permissions are reset (LockEIDDirectory) and it is used.
+;   - Anything else that holds the name - a folder that fails the check, one
+;     that could not be checked (PowerShell blocked or in constrained language
+;     mode), a junction, a file - is moved aside to
+;     OpenAccessEID.untrusted-<GUID>, never adopted, and a new folder is
+;     created in its place. Taking ownership of it would launder whatever was
+;     planted inside.
+; logs is created last, inside the locked folder, so it inherits the protected
+; DACL and is owned by whoever runs the installer (Administrators or SYSTEM).
 Function SecureEIDDataDir
   StrCpy $R9 "C:\ProgramData\OpenAccessEID"
+  StrCpy $R6 0
 
-  ${If} ${FileExists} "$R9"
+  ${Do}
+    IntOp $R6 $R6 + 1
     Push $R9
-    Call IsEIDDataTreeTrusted
-    Pop $R0
-    ${If} $R0 == 0
-      Push $R9
-      Push $R9
-      Call MoveAside
-      Pop $R8
-      ${If} $R8 == ""
-        Push $R9
-        Call WarnNotMovedAside
-        Return
-      ${EndIf}
-      Push "WARNING: $R9 was a junction, not owned by SYSTEM/Administrators, or modifiable by other users; moved aside to $R8 for review."
-      Call InstallLog
-    ${ElseIf} $R0 == 2
-      Push "WARNING: could not check $R9 (PowerShell did not run, or runs in constrained language mode); securing it in place instead of moving it aside."
-      Call InstallLog
-    ${EndIf}
-  ${EndIf}
-
-  ; Base directory only, then lock it before anything is created inside it.
-  CreateDirectory "$R9"
-  Push $R9
-  Call IsReparsePoint
-  Pop $R0
-  ${If} $R0 == 1
-    Push $R9
-    Call WarnNotMovedAside
-    Return
-  ${EndIf}
-  Push $R9
-  Call LockEIDDirectory
-  Pop $R0
-  ${If} $R0 != 1
-    Push "WARNING: could not secure $R9; OpenAccess EID will refuse to write logs there."
-    Call InstallLog
-    Return
-  ${EndIf}
-
-  ; Until the lock-down above, a standard user could create logs (or a junction
-  ; called logs) in a directory this installer had just created. Now that nobody
-  ; else can add anything, check it and move an untrusted one out of the tree.
-  ${If} ${FileExists} "$R9\logs"
-    Push "$R9\logs"
-    Call IsReparsePoint
+    Call CreateProtectedDir
     Pop $R0
     ${If} $R0 == 1
-      StrCpy $R0 0
-    ${Else}
-      Push "$R9\logs"
-      Call IsEIDDataTreeTrusted
-      Pop $R0
+      Push "Created $R9 (owner Administrators; SYSTEM and Administrators Full, Users read)."
+      Call InstallLog
+      ${ExitDo}
+    ${ElseIf} $R0 != "exists"
+      Push "WARNING: could not create $R9; OpenAccess EID will not write log files until it exists with permissions restricted to SYSTEM and Administrators. Run this installer again."
+      Call InstallLog
+      Return
     ${EndIf}
-    ${If} $R0 == 0
-      Push "$R9\logs"
-      Push "$R9-logs"
-      Call MoveAside
-      Pop $R8
-      ${If} $R8 == ""
-        Push "$R9\logs"
-        Call WarnNotMovedAside
+
+    ; The name was already taken before this call.
+    StrCpy $R0 0
+    System::Call 'kernel32::GetFileAttributesW(w R9) i .R1'
+    ${If} $R1 <> -1
+      IntOp $R1 $R1 & 0x410
+      ${If} $R1 = 0x10
+        Push $R9
+        Call IsEIDDataTreeTrusted
+        Pop $R0
+      ${EndIf}
+    ${EndIf}
+    ${If} $R0 == 1
+      Push $R9
+      Call LockEIDDirectory
+      Pop $R0
+      ${If} $R0 != 1
+        Push "WARNING: could not secure $R9; OpenAccess EID will refuse to write logs there."
+        Call InstallLog
         Return
       ${EndIf}
-      Push "WARNING: $R9\logs was a junction, not owned by SYSTEM/Administrators, or modifiable by other users; moved aside to $R8 for review."
+      Push "Kept the existing $R9: it and everything in it is owned by SYSTEM/Administrators and cannot be changed by other users."
+      Call InstallLog
+      ${ExitDo}
+    ${EndIf}
+
+    ; Not shown to be trusted: move it aside, then create a new one. A
+    ; standard user who keeps re-creating the name is given up on after three
+    ; rounds.
+    ${If} $R6 > 3
+      Push $R9
+      Call WarnNotMovedAside
+      Return
+    ${EndIf}
+    Push $R9
+    Push $R9
+    Call MoveAside
+    Pop $R8
+    ${If} $R8 == ""
+      Push $R9
+      Call WarnNotMovedAside
+      Return
+    ${EndIf}
+    ${If} $R0 == 2
+      Push "WARNING: $R9 already existed and could not be checked (PowerShell did not run, or runs in constrained language mode); moved aside to $R8 rather than adopted. Copy logging.json back from there after checking it, if it is yours."
+    ${Else}
+      Push "WARNING: $R9 was a junction or file, not owned by SYSTEM/Administrators, or modifiable by other users; moved aside to $R8 for review."
+    ${EndIf}
+    Call InstallLog
+  ${Loop}
+
+  CreateDirectory "$R9\logs"
+FunctionEnd
+
+;--------------------------------
+;Installation folder checks
+
+; Push <path> / Call CanonicalisePath / Pop <full, long path without a
+; trailing backslash, or "" when it cannot be resolved>
+; ".", ".." and short (8.3) names are resolved, so "C:\PROGRA~1\.\" and
+; "C:\Program Files" compare equal (case-insensitively, as StrCmp does).
+Function CanonicalisePath
+  Exch $R9
+  Push $R8
+  Push $R7
+  System::Call 'kernel32::GetFullPathNameW(w R9, i ${NSIS_MAX_STRLEN}, w .R8, p 0) i .R7'
+  ${If} $R7 = 0
+  ${OrIf} $R7 >= ${NSIS_MAX_STRLEN}
+    StrCpy $R9 ""
+  ${Else}
+    StrCpy $R9 $R8
+    ; Only resolves short names for a path that exists; otherwise keep it.
+    System::Call 'kernel32::GetLongPathNameW(w R9, w .R8, i ${NSIS_MAX_STRLEN}) i .R7'
+    ${If} $R7 > 0
+    ${AndIf} $R7 < ${NSIS_MAX_STRLEN}
+      StrCpy $R9 $R8
+    ${EndIf}
+    StrLen $R7 $R9
+    ${If} $R7 > 3
+      StrCpy $R8 $R9 1 -1
+      ${If} $R8 == "\"
+        StrCpy $R9 $R9 -1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Pop $R7
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
+; Used by IsForbiddenInstallDir: $R8 = 1 when <path> resolves to $R9.
+!macro OAEID_ForbidSame PATH
+  StrCpy $R6 "${PATH}"
+  ${If} $R6 != ""
+    Push $R6
+    Call CanonicalisePath
+    Pop $R6
+    ${If} $R6 != ""
+    ${AndIf} $R6 == $R9
+      StrCpy $R8 1
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+; Push <canonical path> / Call IsForbiddenInstallDir / Pop <"1" | "0">
+; "1" for a folder OpenAccess EID must never take over (LockEIDDirectory would
+; replace its DACL, and the DACL of everything below it): a drive root, a
+; network or device path (\\server\share, \\?\...), the Windows folder or
+; anything inside it, Program Files, Program Files (x86), their Common Files,
+; the ProgramData root and the Users folder (and Users\Public).
+Function IsForbiddenInstallDir
+  Exch $R9
+  Push $R8
+  Push $R7
+  Push $R6
+  StrCpy $R8 0
+  StrLen $R7 $R9
+  ${If} $R7 <= 3
+    StrCpy $R8 1
+  ${EndIf}
+  ; Anything but "X:\..." - UNC, device and relative paths.
+  StrCpy $R7 $R9 1 1
+  ${If} $R7 != ":"
+    StrCpy $R8 1
+  ${EndIf}
+  StrCpy $R7 $R9 2
+  ${If} $R7 == "\\"
+    StrCpy $R8 1
+  ${EndIf}
+  ${If} $R8 == 0
+    !insertmacro OAEID_ForbidSame "$WINDIR"
+    !insertmacro OAEID_ForbidSame "$PROGRAMFILES64"
+    !insertmacro OAEID_ForbidSame "$PROGRAMFILES32"
+    !insertmacro OAEID_ForbidSame "$COMMONFILES64"
+    !insertmacro OAEID_ForbidSame "$COMMONFILES32"
+    ReadEnvStr $R7 "ProgramData"
+    !insertmacro OAEID_ForbidSame "$R7"
+    ReadEnvStr $R7 "ALLUSERSPROFILE"
+    !insertmacro OAEID_ForbidSame "$R7"
+    ReadEnvStr $R7 "PUBLIC"
+    !insertmacro OAEID_ForbidSame "$R7"
+    ReadRegStr $R7 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" "ProfilesDirectory"
+    ExpandEnvStrings $R7 $R7
+    !insertmacro OAEID_ForbidSame "$R7"
+    ReadEnvStr $R7 "SystemDrive"
+    !insertmacro OAEID_ForbidSame "$R7\Users"
+    ; Anything inside the Windows folder.
+    Push $WINDIR
+    Call CanonicalisePath
+    Pop $R6
+    ${If} $R6 != ""
+      StrLen $R7 "$R6\"
+      StrCpy $R7 $R9 $R7
+      ${If} $R7 == "$R6\"
+        StrCpy $R8 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  StrCpy $R9 $R8
+  Pop $R6
+  Pop $R7
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
+; Push <directory> / Call IsDirEmpty / Pop <"1" | "0">
+; "1" when <directory> can be listed and holds nothing (hidden and system
+; entries included). "0" when it holds anything or cannot be listed.
+Function IsDirEmpty
+  Exch $R9
+  Push $R8
+  Push $R7
+  Push $R6
+  StrCpy $R7 1
+  ClearErrors
+  FindFirst $R8 $R6 "$R9\*"
+  ${If} ${Errors}
+    StrCpy $R7 0
+  ${Else}
+    ${Do}
+      ${If} $R6 != "."
+      ${AndIf} $R6 != ".."
+      ${AndIf} $R6 != ""
+        StrCpy $R7 0
+        ${ExitDo}
+      ${EndIf}
+      ClearErrors
+      FindNext $R8 $R6
+      ${If} ${Errors}
+        ${ExitDo}
+      ${EndIf}
+    ${Loop}
+    FindClose $R8
+  ${EndIf}
+  StrCpy $R9 $R7
+  Pop $R6
+  Pop $R7
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
+; Push <reason> / Call RefuseInstallDir: records and shows why $INSTDIR is not
+; used, then stops the installation.
+Function RefuseInstallDir
+  Exch $R9
+  Push "ERROR: installation folder $INSTDIR: $R9 Installation stopped."
+  Call InstallLog
+  MessageBox MB_OK|MB_ICONSTOP "The installation folder$\n$INSTDIR$\n$R9$\n$\nOpenAccess EID runs a SYSTEM service from this folder, so it will not install there. Choose another folder." /SD IDOK
+  Abort
+FunctionEnd
+
+; Call PrepareInstallDir
+; Makes $INSTDIR a folder that only SYSTEM and Administrators can change, or
+; stops the installation. Everything is decided BEFORE any permission is
+; changed, so a wrong /D= or InstallPath value cannot strip the ACL (and
+; TrustedInstaller's or ALL APPLICATION PACKAGES' access) from a folder that is
+; not ours:
+;   - a drive root, a network or device path, the Windows folder or anything
+;     in it, Program Files, Program Files (x86), their Common Files, the
+;     ProgramData root and the Users folder are refused (IsForbiddenInstallDir);
+;   - a junction, symbolic link or other reparse point, or a file, is refused;
+;   - a folder that does not exist is created by CreateProtectedDir, with the
+;     protected DACL from the first instant;
+;   - an existing EMPTY folder is removed and created again the same way, so
+;     its old owner and permissions are never adopted;
+;   - an existing non-empty folder is accepted only when it is a previous
+;     OpenAccess EID installation: the folder the old uninstaller has just run
+;     over (.onInit), or one holding EIDUninstall.exe. Only then are its
+;     permissions reset (LockEIDDirectory), after which everything in it must
+;     pass IsEIDDataTreeTrusted. Any other non-empty folder is refused, and
+;     nothing in it is changed.
+; $INSTDIR is replaced by the canonical path that was checked.
+Function PrepareInstallDir
+  Push $INSTDIR
+  Call CanonicalisePath
+  Pop $R9
+  Push $R9
+  Call IsForbiddenInstallDir
+  Pop $R0
+  ${If} $R0 == 1
+    Push "is a drive root, a network path, or a Windows system folder (Windows, Program Files, Common Files, ProgramData, Users). Nothing in it was changed."
+    Call RefuseInstallDir
+  ${EndIf}
+  StrCpy $INSTDIR $R9
+
+  System::Call 'kernel32::GetFileAttributesW(w R9) i .R0'
+  ${If} $R0 <> -1
+    IntOp $R1 $R0 & 0x400
+    ${If} $R1 <> 0
+      Push "is a junction, symbolic link or other reparse point."
+      Call RefuseInstallDir
+    ${EndIf}
+    IntOp $R1 $R0 & 0x10
+    ${If} $R1 = 0
+      Push "is a file, not a folder."
+      Call RefuseInstallDir
+    ${EndIf}
+
+    ; 1 = the folder the previous version's uninstaller ran over; 2 = holds
+    ; this product's uninstaller; 0 = neither.
+    StrCpy $R2 0
+    ${If} $PrevInstallDir != ""
+      Push $PrevInstallDir
+      Call CanonicalisePath
+      Pop $R1
+      ${If} $R1 == $R9
+        StrCpy $R2 1
+      ${EndIf}
+    ${EndIf}
+    ${If} $R2 == 0
+    ${AndIf} ${FileExists} "$R9\EIDUninstall.exe"
+      StrCpy $R2 2
+    ${EndIf}
+
+    ${If} $R2 == 0
+      Push $R9
+      Call IsDirEmpty
+      Pop $R1
+      ${If} $R1 != 1
+        Push "already exists, is not empty and is not an OpenAccess EID installation. Nothing in it was changed. Choose a new or empty folder."
+        Call RefuseInstallDir
+      ${EndIf}
+      ; Empty: remove it and create it again below, rather than adopt it.
+      ClearErrors
+      RMDir $R9
+      ${If} ${Errors}
+        Push "is an existing empty folder that could not be replaced (it may be open in another program). Nothing in it was changed."
+        Call RefuseInstallDir
+      ${EndIf}
+    ${Else}
+      Push "$R9 is a previous OpenAccess EID installation folder; resetting its permissions."
+      Call InstallLog
+      Push $R9
+      Call LockEIDDirectory
+      Pop $R1
+      ${If} $R1 != 1
+        Push "could not have its permissions restricted to SYSTEM and Administrators."
+        Call RefuseInstallDir
+      ${EndIf}
+      Push $R9
+      Call IsEIDDataTreeTrusted
+      Pop $R1
+      ${If} $R1 == 0
+        Push "contains files or folders that are not owned by SYSTEM/Administrators, that other users can modify, or a junction. Remove them, or choose another folder."
+        Call RefuseInstallDir
+      ${ElseIf} $R1 == 2
+        ${If} $R2 == 1
+          Push "WARNING: could not check the contents of $INSTDIR (PowerShell did not run, or runs in constrained language mode); its permissions have been restricted."
+          Call InstallLog
+        ${Else}
+          Push "holds EIDUninstall.exe, but its contents could not be checked (PowerShell did not run, or runs in constrained language mode). Uninstall that copy first, or choose a new or empty folder."
+          Call RefuseInstallDir
+        ${EndIf}
+      ${EndIf}
+      Return
+    ${EndIf}
+  ${EndIf}
+
+  ; A new folder (or an empty one just removed).
+  ${GetParent} $R9 $R1
+  ${IfNot} ${FileExists} "$R1\*.*"
+    CreateDirectory $R1
+  ${EndIf}
+  Push $R9
+  Call CreateProtectedDir
+  Pop $R1
+  ${If} $R1 == "exists"
+    Push "was created by something else while the installer was creating it. Nothing in it was changed."
+    Call RefuseInstallDir
+  ${ElseIf} $R1 != 1
+    Push "could not be created with permissions restricted to SYSTEM and Administrators."
+    Call RefuseInstallDir
+  ${EndIf}
+  ; Owner Administrators, also where CreateProtectedDir could not ask for it.
+  Push $R9
+  Call LockEIDDirectory
+  Pop $R1
+  ${If} $R1 != 1
+    Push "could not have its permissions restricted to SYSTEM and Administrators."
+    Call RefuseInstallDir
+  ${EndIf}
+FunctionEnd
+
+; Call UndoNeutraliseOldUnregister
+; Reverses NeutraliseOldUnregister when the old uninstaller was cancelled or
+; failed, so the installed version is left as it was: the original package DLL
+; is renamed back over the substitute in one step (MOVEFILE_REPLACE_EXISTING).
+; NeutraliseOldUnregister queued the original's GUID-suffixed name for deletion
+; at the next reboot; once it has its own name again, that queued delete finds
+; nothing to delete. With no original, the substitute is simply deleted.
+Function UndoNeutraliseOldUnregister
+  ${If} $NeutralisedDll == ""
+    Return
+  ${EndIf}
+  Push $R9
+  ${DisableX64FSRedirection}
+  ${If} $NeutralisedAside != ""
+    System::Call 'kernel32::MoveFileExW(w "$NeutralisedAside", w "$NeutralisedDll", i 1) i .R9'
+    ${If} $R9 = 0
+      Push "ERROR: could not put the original $NeutralisedDll back. It is at $NeutralisedAside, which is deleted at the next reboot: rename it back to $NeutralisedDll before rebooting."
+      Call InstallLog
+      MessageBox MB_OK|MB_ICONSTOP "Could not put the installed version's package DLL back.$\n$\nBefore rebooting, rename$\n$NeutralisedAside$\nback to$\n$NeutralisedDll$\n(it is otherwise deleted at the next reboot)." /SD IDOK
+    ${Else}
+      Push "Put the original $NeutralisedDll back in place."
+      Call InstallLog
+    ${EndIf}
+  ${Else}
+    Delete "$NeutralisedDll"
+  ${EndIf}
+  ${EnableX64FSRedirection}
+  StrCpy $NeutralisedDll ""
+  StrCpy $NeutralisedAside ""
+  Pop $R9
+FunctionEnd
+
+;--------------------------------
+;Local smart-card security policy across the old uninstaller
+
+; Saves <value> of HKLM\<key>, with its type: "sz", "dword", or "" when it is
+; absent (or of a type that is not restored).
+!macro OAEID_SaveRegValue KEY NAME VALUE TYPE
+  ClearErrors
+  ReadRegStr ${VALUE} HKLM "${KEY}" "${NAME}"
+  ${If} ${Errors}
+    ; ReadRegStr reads a REG_DWORD as a decimal string and sets the error flag.
+    ${If} ${VALUE} == ""
+      StrCpy ${TYPE} ""
+    ${Else}
+      StrCpy ${TYPE} "dword"
+    ${EndIf}
+  ${Else}
+    StrCpy ${TYPE} "sz"
+  ${EndIf}
+!macroend
+
+; Writes a value saved by OAEID_SaveRegValue back, only if it is now absent.
+!macro OAEID_RestoreRegValue KEY NAME VALUE TYPE
+  ${If} ${TYPE} != ""
+    ClearErrors
+    ReadRegStr $R9 HKLM "${KEY}" "${NAME}"
+    ${If} ${Errors}
+    ${AndIf} $R9 == ""
+      ${If} ${TYPE} == "dword"
+        WriteRegDWORD HKLM "${KEY}" "${NAME}" ${VALUE}
+      ${Else}
+        WriteRegStr HKLM "${KEY}" "${NAME}" ${VALUE}
+      ${EndIf}
+      Push "Restored ${NAME} (${VALUE}) under HKLM\${KEY}, which the previous version's uninstaller removed."
       Call InstallLog
     ${EndIf}
   ${EndIf}
+!macroend
 
-  CreateDirectory "$R9\logs"
-
-  ; Final check of the whole tree, including anything else planted before the
-  ; lock-down (the runtime also ignores a logging.json it does not trust).
-  Push $R9
-  Call IsEIDDataTreeTrusted
-  Pop $R0
-  ${If} $R0 == 0
-    Push "WARNING: $R9 still contains items that are not owned by SYSTEM/Administrators or that other users can modify. Review and remove them; OpenAccess EID ignores an untrusted logging.json and log folder."
-    Call InstallLog
-    MessageBox MB_OK|MB_ICONEXCLAMATION "$R9 still contains items that are not owned by SYSTEM/Administrators or that other users can modify.$\n$\nReview and remove them. Until then OpenAccess EID may not write log files there." /SD IDOK
-  ${ElseIf} $R0 == 2
-    Push "WARNING: could not verify $R9 after securing it (PowerShell did not run, or runs in constrained language mode)."
-    Call InstallLog
+; Call SaveLocalSmartCardPolicy (before the old uninstaller runs)
+; Uninstallers of every version so far delete two local security policy values
+; that an administrator may have set (secpol.msc / local Group Policy) and that
+; the Configuration Wizard can also set:
+;   HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System
+;     scforceoption  "Interactive logon: Require Windows Hello for Business
+;                     or smart card"
+;   HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon
+;     scremoveoption "Interactive logon: Smart card removal behavior"
+; and set the Smart Card Removal Policy service (ScPolicySvc), which enforces
+; scremoveoption, back to manual start and stop it. Without this an upgrade
+; would silently turn smart-card-only logon and the removal behaviour off.
+Function SaveLocalSmartCardPolicy
+  !insertmacro OAEID_SaveRegValue "Software\Microsoft\Windows\CurrentVersion\Policies\System" "scforceoption" $SavedScForceOption $SavedScForceOptionType
+  !insertmacro OAEID_SaveRegValue "Software\Microsoft\Windows NT\CurrentVersion\Winlogon" "scremoveoption" $SavedScRemoveOption $SavedScRemoveOptionType
+  ClearErrors
+  ReadRegDWORD $SavedScPolicySvcStart HKLM "SYSTEM\CurrentControlSet\Services\ScPolicySvc" "Start"
+  ${If} ${Errors}
+    StrCpy $SavedScPolicySvcStart ""
   ${EndIf}
+FunctionEnd
+
+; Call RestoreLocalSmartCardPolicy (after the old uninstaller has run)
+Function RestoreLocalSmartCardPolicy
+  Push $R9
+  !insertmacro OAEID_RestoreRegValue "Software\Microsoft\Windows\CurrentVersion\Policies\System" "scforceoption" $SavedScForceOption $SavedScForceOptionType
+  !insertmacro OAEID_RestoreRegValue "Software\Microsoft\Windows NT\CurrentVersion\Winlogon" "scremoveoption" $SavedScRemoveOption $SavedScRemoveOptionType
+  ; Automatic (2) is what an administrator sets so that scremoveoption is
+  ; enforced; the uninstaller resets it to manual and stops the service.
+  ${If} $SavedScPolicySvcStart == 2
+    ClearErrors
+    ReadRegDWORD $R9 HKLM "SYSTEM\CurrentControlSet\Services\ScPolicySvc" "Start"
+    ${If} $R9 != 2
+      nsExec::ExecToLog '"$SYSDIR\sc.exe" config ScPolicySvc start= auto'
+      Pop $R9
+      nsExec::ExecToLog '"$SYSDIR\sc.exe" start ScPolicySvc'
+      Pop $R9
+      Push "Set the Smart Card Removal Policy service (ScPolicySvc) back to automatic start, as it was before the previous version's uninstaller ran."
+      Call InstallLog
+    ${EndIf}
+  ${EndIf}
+  Pop $R9
 FunctionEnd
 
 ;--------------------------------
@@ -1259,6 +1774,21 @@ Function .onInit
   ${Else}
     MessageBox MB_OK "This installer is designed for 64bits only"
     Abort
+  ${EndIf}
+
+  ; This installer has no folder page, so $INSTDIR (the default, /D= or the
+  ; InstallPath registry value) is final here. Refuse a drive root or a system
+  ; folder now, before an installed version is uninstalled; the Core section
+  ; (PrepareInstallDir) checks the rest.
+  Push $INSTDIR
+  Call CanonicalisePath
+  Pop $R9
+  Push $R9
+  Call IsForbiddenInstallDir
+  Pop $R9
+  ${If} $R9 == 1
+    Push "is a drive root, a network path, or a Windows system folder (Windows, Program Files, Common Files, ProgramData, Users). Nothing was changed."
+    Call RefuseInstallDir
   ${EndIf}
 
   ; Default for the security option.
@@ -1275,6 +1805,9 @@ Function .onInit
   SetRegView 64
   StrCpy $MigratedFromLegacy 0
   StrCpy $EnrolmentsWiped 0
+  StrCpy $PrevInstallDir ""
+  StrCpy $NeutralisedDll ""
+  StrCpy $NeutralisedAside ""
   ; Current install location, else one made under the former product name.
   ReadRegStr $9 HKLM "Software\OpenAccessEID" "InstallPath"
   ${If} $9 == ""
@@ -1341,10 +1874,21 @@ Function .onInit
     ClearErrors
     nsExec::ExecToLog '"$SYSDIR\reg.exe" export "HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider" "$PLUGINSDIR\sccp-policy.reg" /y /reg:64'
     Pop $7
+    ; It also deletes the local security policy values scforceoption and
+    ; scremoveoption and resets the Smart Card Removal Policy service.
+    Call SaveLocalSmartCardPolicy
 
     ; Logging settings live under the install key, which the uninstaller also
     ; deletes. Migrating from the former name, copy them to the new key (which
     ; the old uninstaller never touches); otherwise keep a copy to put back.
+    ; Whether the new LogManager key existed before, so that a cancelled
+    ; upgrade can remove the copy made here.
+    StrCpy $R4 0
+    ClearErrors
+    EnumRegValue $R5 HKLM "SOFTWARE\OpenAccessEID\LogManager" 0
+    ${If} ${Errors}
+      StrCpy $R4 1
+    ${EndIf}
     ${If} $MigratedFromLegacy == 1
       nsExec::ExecToLog '"$SYSDIR\reg.exe" copy "HKLM\SOFTWARE\EIDAuthentication\LogManager" "HKLM\SOFTWARE\OpenAccessEID\LogManager" /s /f /reg:64'
       Pop $8
@@ -1391,16 +1935,29 @@ Function .onInit
         ${EndIf}
       ${EndIf}
 
+      ; An NSIS uninstaller exits 0 when it finished, 1 when the operator
+      ; cancelled it and 2 when it stopped part-way.
+      ClearErrors
       ${If} ${Silent}
-        ExecWait '"$1" /S _?=$0'
+        ExecWait '"$1" /S _?=$0' $R3
       ${Else}
-        ExecWait '"$1" _?=$0'
+        ExecWait '"$1" _?=$0' $R3
       ${EndIf}
-      ; Run in place, the uninstaller cannot delete itself or its directory.
-      Delete "$1"
-      RMDir "$0"
+      ${If} ${Errors}
+        StrCpy $R3 "not started"
+      ${EndIf}
+      ${If} $R3 == 0
+        ; Run in place, the uninstaller cannot delete itself or its directory.
+        Delete "$1"
+        RMDir "$0"
+        StrCpy $PrevInstallDir $0
+      ${EndIf}
+    ${Else}
+      StrCpy $R3 0
     ${EndIf}
 
+    ; Put back what was saved, whatever happened: an uninstaller that stopped
+    ; part-way may already have deleted it. Each step only adds what is missing.
     ${If} $7 == 0
       nsExec::ExecToLog '"$SYSDIR\reg.exe" import "$PLUGINSDIR\sccp-policy.reg" /reg:64'
       Pop $7
@@ -1408,6 +1965,21 @@ Function .onInit
     ${If} $8 == 0
       nsExec::ExecToLog '"$SYSDIR\reg.exe" import "$PLUGINSDIR\logmanager.reg" /reg:64'
       Pop $8
+    ${EndIf}
+    Call RestoreLocalSmartCardPolicy
+
+    ; Cancelled or failed: leave the installed version as it was and stop.
+    ${If} $R3 != 0
+      Call UndoNeutraliseOldUnregister
+      ${If} $MigratedFromLegacy == 1
+      ${AndIf} $R4 == 1
+        DeleteRegKey HKLM "SOFTWARE\OpenAccessEID\LogManager"
+        DeleteRegKey /ifempty HKLM "SOFTWARE\OpenAccessEID"
+      ${EndIf}
+      Push "ERROR: the uninstaller of the installed version ($6) was cancelled or did not finish (exit code $R3). Installation stopped; nothing of this version was installed."
+      Call InstallLog
+      MessageBox MB_OK|MB_ICONSTOP "The uninstaller of the installed version was cancelled or did not finish (exit code $R3).$\n$\nThe installation has been stopped. If the uninstaller was cancelled, the installed version is unchanged. If it stopped part-way, run this installer again." /SD IDOK
+      Abort
     ${EndIf}
     Goto CheckInstallEnd
 
