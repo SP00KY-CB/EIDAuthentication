@@ -342,6 +342,11 @@ extern "C"
 		BOOL UseUnicode = TRUE;
 		SECPKG_CLIENT_INFO ClientInfo; 
 		PLUID LogonIdToUse; 
+		// Never hand back (or trace) an uninitialised handle on a failure path.
+		if (pCredentialHandle)
+		{
+			*pCredentialHandle = 0;
+		}
 		__try
 		{
 			if ((CredentialUseFlags & SECPKG_CRED_BOTH) == 0)
@@ -574,8 +579,10 @@ extern "C"
 			pCredential = CCredential::CreateCredential(LogonIdToUse,pCertInfo, szPasswordW, CredentialUseFlags);
 			if (!pCredential)
 			{
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EIDAlloc"); 
-					__leave;
+				// Status is still STATUS_SUCCESS here: report the failure.
+				Status = SEC_E_INSUFFICIENT_MEMORY;
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CreateCredential failed"); 
+				__leave;
 			}
 			*pCredentialHandle = reinterpret_cast<LSA_SEC_HANDLE>(pCredential);
 			*ExpirationTime = Forever;
@@ -599,7 +606,14 @@ extern "C"
 			if (pAuthIdentityEx)
 				MyLsaDispatchTable->FreeLsaHeap(pAuthIdentityEx);
 		}
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Credential %p Status = 0x%08x",reinterpret_cast<PVOID>(*pCredentialHandle), Status);
+		if (Status == STATUS_SUCCESS)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Credential %p Status = 0x%08x",reinterpret_cast<PVOID>(*pCredentialHandle), Status);
+		}
+		else
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Status = 0x%08x", Status);
+		}
 		return Status;
 	}
 
@@ -967,7 +981,10 @@ extern "C"
 		return Status;
 	}
 
-	NTSTATUS NTAPI SpCreateToken(DWORD dwRid, PHANDLE phToken)
+	// pAccountExpiration (optional) receives the time after which the account
+	// may no longer log on (account expiry / end of permitted logon hours), as
+	// computed by CheckAuthorization; MAXLONGLONG means never.
+	NTSTATUS NTAPI SpCreateToken(DWORD dwRid, PHANDLE phToken, PLARGE_INTEGER pAccountExpiration)
 	{
 		NTSTATUS Status = STATUS_SUCCESS;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
 		NTSTATUS SubStatus = STATUS_SUCCESS;  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity
@@ -1000,6 +1017,10 @@ extern "C"
 				__leave;
 			}
 			*phToken = INVALID_HANDLE_VALUE;
+			if (pAccountExpiration)
+			{
+				pAccountExpiration->QuadPart = MAXLONGLONG;
+			}
 			// create the sid from the rid
 			
 			NetStatus = NetUserEnum(NULL, 3, 0, reinterpret_cast<PBYTE*>(&pInfo), MAX_PREFERRED_LENGTH, &dwEntriesRead,&dwTotalEntries, NULL);  // NOSONAR - CAST-01: Win32/LSA interop cast, layout-verified
@@ -1037,6 +1058,10 @@ extern "C"
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CheckAuthorization failed 0x%08X 0x%08X",Status, SubStatus);
 				EIDSecurityAudit(SECURITY_AUDIT_FAILURE, L"[AUTH_RESTRICTED] SSP network logon refused for user '%s': account restriction 0x%08X/0x%08X", szUserName, Status, SubStatus);
 				__leave;
+			}
+			if (pAccountExpiration)
+			{
+				*pAccountExpiration = AccountExpirationTime;
 			}
 			dwSize = ARRAYSIZE(szComputer);
 			GetComputerNameW(szComputer, &dwSize);
@@ -1101,6 +1126,8 @@ extern "C"
 		NTSTATUS Status = STATUS_SUCCESS;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
 		PEID_SSP_CALLBACK_MESSAGE callbackMessage = NULL;
 		HANDLE hToken = NULL;  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
+		LARGE_INTEGER AccountExpiration;
+		AccountExpiration.QuadPart = MAXLONGLONG;
 		__try
 		{
 			CSecurityContext* newContext = NULL;
@@ -1156,11 +1183,25 @@ extern "C"
 			// final call :
 			// create a token and send it to the client
 
-			Status = SpCreateToken(newContext->GetRid(), &hToken);
+			Status = SpCreateToken(newContext->GetRid(), &hToken, &AccountExpiration);
 			if (Status != STATUS_SUCCESS)
 			{
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SpCreateToken = 0x%08X",Status);
 				__leave;
+			}
+			// The context must not outlive the account: clamp the expiration
+			// reported to the caller to the account expiry / logon-hours limit
+			// computed by CheckAuthorization (previously computed, then
+			// discarded in favour of Forever).
+			{
+				LARGE_INTEGER liForever;
+				liForever.LowPart = Forever.LowPart;
+				liForever.HighPart = Forever.HighPart;
+				if (AccountExpiration.QuadPart < liForever.QuadPart)
+				{
+					ExpirationTime->LowPart = AccountExpiration.LowPart;
+					ExpirationTime->HighPart = AccountExpiration.HighPart;
+				}
 			}
 			callbackMessage = static_cast<PEID_SSP_CALLBACK_MESSAGE>(EIDAlloc(sizeof(EID_SSP_CALLBACK_MESSAGE)));
 			if (!callbackMessage)
