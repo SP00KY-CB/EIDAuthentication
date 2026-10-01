@@ -793,7 +793,7 @@ extern "C"
 					return SEC_E_INSUFFICIENT_MEMORY;
 				}
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Username = %s",szUserName);
-				const ULONG cbUserName = static_cast<ULONG>((wcslen(szUserName) + 1) * sizeof(WCHAR));
+				const ULONG cbUserName = static_cast<ULONG>((wcsnlen(szUserName, UNICODE_STRING_MAX_CHARS) + 1) * sizeof(WCHAR));
 				PVOID pClientUserName = NULL;
 				Status = MyLsaDispatchTable->AllocateClientBuffer(NULL, cbUserName, &pClientUserName);
 				if (Status != STATUS_SUCCESS)

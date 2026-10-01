@@ -555,7 +555,8 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 		}
 		else if (szPassword != nullptr)  // STRPTR-01: Validate pointer before wcslen
 		{
-			const size_t cchPassword = wcslen(szPassword);
+			// Bounded scan: anything reaching the cap is too long to store anyway.
+			const size_t cchPassword = wcsnlen(szPassword, USHRT_MAX / sizeof(WCHAR) + 1);
 			if (cchPassword > USHRT_MAX / sizeof(WCHAR))
 			{
 				dwError = ERROR_INVALID_PARAMETER;

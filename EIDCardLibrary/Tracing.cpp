@@ -134,6 +134,16 @@ void EIDCardLibraryTracingUnRegister() {
 // see http://www.codeproject.com/Articles/16598/Get-Your-DLL-s-Path-Name for the "__ImageBase"
 EXTERN_C IMAGE_DOS_HEADER __ImageBase;  // NOSONAR - RUNTIME-01: Linker-defined symbol
 
+// Format into a fixed buffer without ever invoking the CRT invalid-parameter handler,
+// which would terminate LSASS. Returns FALSE only when nothing usable was produced; a
+// truncated message (ret == -1 with a non-empty, NUL-terminated buffer) is kept.
+static BOOL EIDFormatTruncatedV(PWSTR pBuffer, size_t cchBuffer, PCWSTR szFormat, va_list ap)
+{
+	pBuffer[0] = L'\0';
+	const int ret = _vsnwprintf_s(pBuffer, cchBuffer, _TRUNCATE, szFormat, ap);
+	return (ret >= 0 || pBuffer[0] != L'\0') ? TRUE : FALSE;
+}
+
 void EIDCardLibraryTraceEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dwLevel, PCWSTR szFormat,...) {  // NOSONAR - VARIADIC-01: ETW tracing requires variadic format function
 	_ASSERTE( _CrtCheckMemory( ) );
 #ifndef _DEBUG
@@ -142,7 +152,6 @@ void EIDCardLibraryTraceEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR
 #endif
 	WCHAR Buffer[256];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 	WCHAR Buffer2[356];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
-	int ret;
 	va_list ap;
 
 	if (bFirst) 
@@ -155,11 +164,10 @@ void EIDCardLibraryTraceEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR
 	// which kills LSASS - and callers trace caller-controlled strings (user names)
 	// before they are validated. With _TRUNCATE an over-long message is cut short
 	// and ret is -1; the buffer is still NUL-terminated, so emit it anyway.
-	Buffer[0] = L'\0';
 	va_start (ap, szFormat);
-	ret = _vsnwprintf_s (Buffer, ARRAYSIZE(Buffer), _TRUNCATE, szFormat, ap);
+	const BOOL fFormatted = EIDFormatTruncatedV(Buffer, ARRAYSIZE(Buffer), szFormat, ap);
 	va_end (ap);
-	if (ret < 0 && Buffer[0] == L'\0') return;
+	if (!fFormatted) return;
 	Buffer[ARRAYSIZE(Buffer) - 1] = L'\0';
 #ifdef _DEBUG
 	_snwprintf_s(Buffer2,ARRAYSIZE(Buffer2),_TRUNCATE,L"%S(%d) : %S - %s\r\n",szFile,dwLine,szFunction,Buffer);
@@ -444,7 +452,6 @@ void EIDSecurityAuditEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dw
 	UNREFERENCED_PARAMETER(szFile);
 	WCHAR Buffer[512];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 	WCHAR AuditBuffer[600];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
-	int ret;
 	va_list ap;
 	LPCWSTR pwszAuditPrefix;
 
@@ -471,11 +478,10 @@ void EIDSecurityAuditEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dw
 	}
 
 	// ret == -1 with a non-empty buffer means "truncated": still emit the audit.
-	Buffer[0] = L'\0';
 	va_start(ap, szFormat);
-	ret = _vsnwprintf_s(Buffer, ARRAYSIZE(Buffer), _TRUNCATE, szFormat, ap);
+	const BOOL fFormatted = EIDFormatTruncatedV(Buffer, ARRAYSIZE(Buffer), szFormat, ap);
 	va_end(ap);
-	if (ret < 0 && Buffer[0] == L'\0') return;
+	if (!fFormatted) return;
 
 	// Format with security audit prefix and location info.
 	// _snwprintf_s/_TRUNCATE, not swprintf_s: the prefix, function name and an already
@@ -519,7 +525,6 @@ void EIDLogErrorWithContextEx(  // NOSONAR - VARIADIC-01: Error logging requires
 
 	WCHAR ContextBuffer[256] = {0};  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 	WCHAR FinalBuffer[512] = {0};  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
-	int ret;
 
 	if (bFirst)
 	{
@@ -531,9 +536,9 @@ void EIDLogErrorWithContextEx(  // NOSONAR - VARIADIC-01: Error logging requires
 	{
 		va_list ap;
 		va_start(ap, szAdditionalContext);
-		ret = _vsnwprintf_s(ContextBuffer, ARRAYSIZE(ContextBuffer), _TRUNCATE, szAdditionalContext, ap);
+		const BOOL fFormatted = EIDFormatTruncatedV(ContextBuffer, ARRAYSIZE(ContextBuffer), szAdditionalContext, ap);
 		va_end(ap);
-		if (ret < 0 && ContextBuffer[0] == L'\0')  // -1 with text means truncated: keep it
+		if (!fFormatted)
 		{
 			wcscpy_s(ContextBuffer, L"(context formatting error)");
 		}

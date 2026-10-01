@@ -51,151 +51,9 @@ static DWORD ClampMaxFileSizeMB(DWORD dwValue)
     return dwValue;
 }
 
-// ================================================================
-// M5: Restrictive DACL for the log directory.
-// Full control to SYSTEM (SY) and Administrators (BA); Read&Execute only
-// (0x1200a9, no create/write) to Users (BU). PAI = protected, no inheritance
-// from the (Users-writable) ProgramData parent. Prevents a low-privileged
-// user from planting files/symlinks that this SYSTEM service would follow.
-// ================================================================
-#define EID_LOG_DIR_SDDL L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
-
-// Build a SECURITY_ATTRIBUTES carrying the restrictive log-dir DACL above.
-// On success returns TRUE and hands back the SD in *ppSD; the caller MUST
-// LocalFree(*ppSD) once CreateDirectoryW has returned. On failure returns
-// FALSE and the caller should fall back to a NULL security descriptor.
-static BOOL BuildLogDirSecurityAttributes(SECURITY_ATTRIBUTES* psa, PSECURITY_DESCRIPTOR* ppSD)
-{
-    if (ppSD)
-        *ppSD = nullptr;
-    if (!psa || !ppSD)
-        return FALSE;
-
-    PSECURITY_DESCRIPTOR pSD = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            EID_LOG_DIR_SDDL, SDDL_REVISION_1, &pSD, nullptr))
-        return FALSE;
-
-    psa->nLength = sizeof(SECURITY_ATTRIBUTES);
-    psa->lpSecurityDescriptor = pSD;
-    psa->bInheritHandle = FALSE;
-    *ppSD = pSD;
-    return TRUE;
-}
-
-// Product directory. Duplicated from EIDCardLibrary/CSVConfig.h (EID_CSV_CONFIG_DIR):
-// this project intentionally has no EIDCardLibrary include path. Keep in step.
-#define EID_BASE_DIR L"C:\\ProgramData\\OpenAccessEID"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
-
-// TRUE when pwszPath is not a reparse point and is owned by SYSTEM or Administrators.
-// Mirror of EID_IsAdminOwnedNonReparse in EIDCardLibrary/CSVConfig.h. C:\ProgramData lets
-// any user create C:\ProgramData\OpenAccessEID (or a junction) before it exists; this
-// LocalSystem service must not write, rename or delete inside such a directory.
-static BOOL IsAdminOwnedNonReparse(PCWSTR pwszPath)
-{
-    if (!pwszPath || pwszPath[0] == L'\0')
-        return FALSE;
-
-    HANDLE hObject = CreateFileW(pwszPath, READ_CONTROL | FILE_READ_ATTRIBUTES,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (hObject == INVALID_HANDLE_VALUE)
-        return FALSE;
-
-    BOOL fTrusted = FALSE;
-    BY_HANDLE_FILE_INFORMATION info = {};
-    if (GetFileInformationByHandle(hObject, &info) &&
-        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0)
-    {
-        PSID pOwner = nullptr;
-        PSECURITY_DESCRIPTOR pOwnerSD = nullptr;
-        if (GetSecurityInfo(hObject, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
-                &pOwner, nullptr, nullptr, nullptr, &pOwnerSD) == ERROR_SUCCESS)
-        {
-            fTrusted = (pOwner != nullptr && IsValidSid(pOwner) &&
-                (IsWellKnownSid(pOwner, WinLocalSystemSid) ||
-                 IsWellKnownSid(pOwner, WinBuiltinAdministratorsSid))) ? TRUE : FALSE;
-            LocalFree(pOwnerSD);
-        }
-    }
-    CloseHandle(hObject);
-    return fTrusted;
-}
-
-// TRUE when pwszDir is inside the product directory (so the product directory must be
-// vetted too: a log directory is only as trustworthy as its parent).
-static BOOL IsUnderBaseDir(PCWSTR pwszDir)
-{
-    const size_t cchBase = wcslen(EID_BASE_DIR);
-    return (_wcsnicmp(pwszDir, EID_BASE_DIR, cchBase) == 0 && pwszDir[cchBase] == L'\\') ? TRUE : FALSE;
-}
-
-// Create one directory with the DACL above, re-applying it when the directory already
-// exists. CreateDirectoryW ignores its security attributes for an existing directory, so
-// without this every machine upgraded from an earlier build would keep the inherited
-// (Users-writable) ProgramData ACL and M5 would never take effect. An existing directory
-// that is a reparse point or not SYSTEM/Administrators-owned is refused, never adopted.
-static BOOL EnsureSecuredDirectory(PCWSTR pwszDir)
-{
-    SECURITY_ATTRIBUTES sa;
-    PSECURITY_DESCRIPTOR pSD = nullptr;
-    if (!BuildLogDirSecurityAttributes(&sa, &pSD))
-    {
-        CreateDirectoryW(pwszDir, nullptr);
-        return IsAdminOwnedNonReparse(pwszDir);
-    }
-
-    BOOL fSafe = FALSE;
-    if (CreateDirectoryW(pwszDir, &sa))
-    {
-        fSafe = TRUE;  // created just now by this service, with the protected DACL
-    }
-    else if (GetLastError() == ERROR_ALREADY_EXISTS && IsAdminOwnedNonReparse(pwszDir))
-    {
-        PACL pDacl = nullptr;
-        BOOL fDaclPresent = FALSE;
-        BOOL fDaclDefaulted = FALSE;
-        if (GetSecurityDescriptorDacl(pSD, &fDaclPresent, &pDacl, &fDaclDefaulted) && fDaclPresent)
-        {
-            // PROTECTED_DACL_SECURITY_INFORMATION matches the SDDL's "PAI" - it severs
-            // inheritance from ProgramData rather than merging with it.
-            SetNamedSecurityInfoW(const_cast<PWSTR>(pwszDir), SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                nullptr, nullptr, pDacl, nullptr);
-        }
-        fSafe = TRUE;
-    }
-    LocalFree(pSD);
-    return fSafe;
-}
-
-// Secure the log directory (and the product directory above it first). FALSE means the
-// directory must not be used: diagnostics file logging is skipped.
-static BOOL EnsureLogDirSecured(PCWSTR pwszDir)
-{
-    if (!pwszDir || pwszDir[0] == L'\0')
-        return FALSE;
-    if (IsUnderBaseDir(pwszDir) && !EnsureSecuredDirectory(EID_BASE_DIR))
-        return FALSE;
-    return EnsureSecuredDirectory(pwszDir);
-}
-
-// Rotation guard, checked right before MoveFileExW/DeleteFileW: the directory holding
-// pwszLogPath (and the product directory above it) must still be a real directory owned
-// by SYSTEM/Administrators, so a junction swapped in cannot redirect a SYSTEM rename/delete.
-static BOOL IsLogDirSafeForRotation(PCWSTR pwszLogPath)
-{
-    WCHAR szDir[MAX_PATH];  // NOSONAR - LSASS-01: C-style buffer required by Win32 API
-    if (!pwszLogPath || wcscpy_s(szDir, pwszLogPath) != 0)
-        return FALSE;
-    WCHAR* pLastSlash = wcsrchr(szDir, L'\\');
-    if (!pLastSlash)
-        return FALSE;
-    *pLastSlash = L'\0';
-    if (IsUnderBaseDir(szDir) && !IsAdminOwnedNonReparse(EID_BASE_DIR))
-        return FALSE;
-    return IsAdminOwnedNonReparse(szDir);
-}
+// Directory-trust helpers (EnsureLogDirSecured, EID_IsLogDirSafeForRotation, ...) are
+// shared with the LSASS-side logger rather than duplicated here.
+#include "../EIDCardLibrary/LogDirSecurity.h"
 
 // Service name and display name
 #define SERVICE_NAME             L"EIDTraceConsumer"  // NOSONAR - MACRO-01: Windows-style macro constant retained for API/preprocessor use
@@ -439,7 +297,7 @@ void RotateDiagFile()
     // This service runs as LocalSystem: never rename/delete through a directory that is a
     // junction or not owned by SYSTEM/Administrators. Skipping rotation leaves the file to
     // be re-vetted (and refused) by EnsureDiagFileOpen on the next write.
-    if (!IsLogDirSafeForRotation(g_szDiagPath))
+    if (!EID_IsLogDirSafeForRotation(g_szDiagPath))
     {
         g_dwDiagFileSize = 0;
         return;
