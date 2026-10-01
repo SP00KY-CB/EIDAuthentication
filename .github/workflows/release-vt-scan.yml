@@ -267,6 +267,7 @@ jobs:
             # linked report be checked by hand.
             if [ -z "$stats" ]; then
               echo "::warning::VirusTotal analysis for ${name} (${sha}) did not complete in time."
+              # shellcheck disable=SC2016  # Markdown backticks, not an expansion
               printf '| `%s` | _pending_ | ⏳ analysis incomplete | [report](https://www.virustotal.com/gui/file/%s) |\n' \
                 "$name" "$sha" >> vt-table.md
               incomplete=1
@@ -285,6 +286,7 @@ jobs:
             fi
 
             echo "${name}: ${flagged}/${total} engines flagged (threshold ${threshold})"
+            # shellcheck disable=SC2016  # Markdown backticks, not an expansion
             printf '| `%s` | %s / %s | %s | [report](https://www.virustotal.com/gui/file/%s) |\n' \
               "$name" "$flagged" "$total" "$verdict" "$sha" >> vt-table.md
 
@@ -304,6 +306,7 @@ jobs:
 
               if [ -n "$engine_rows" ]; then
                 {
+                  # shellcheck disable=SC2016  # Markdown backticks, not an expansion
                   printf '\n**`%s`** — flagged by %s of %s engines:\n\n' "$name" "$flagged" "$total"
                   printf '| Engine | Category | Detection name |\n'
                   printf '|---|---|---|\n'
