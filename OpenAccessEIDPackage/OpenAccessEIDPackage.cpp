@@ -165,9 +165,11 @@ extern "C"
 		PSECURITY_LOGON_SESSION_DATA pLogonSessionData = NULL;
 		DWORD dwError = 0;
 		PSID AdministratorsGroup = NULL;
-		HANDLE hProcess = NULL;  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
-		HANDLE hToken = NULL;  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
+		HANDLE hImpToken = NULL;  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
 		BOOL bImpersonating = FALSE;
+		BOOL fIsAdmin = FALSE;
+		SECURITY_IMPERSONATION_LEVEL ImpersonationLevel = SecurityAnonymous;
+		DWORD dwReturnLength = 0;
 		__try
 		{
 			if (STATUS_SUCCESS != MyLsaDispatchTable->GetClientInfo(&ClientInfo))
@@ -271,35 +273,79 @@ extern "C"
 				}
 			}
 			// is admin ?
+			//
+			// FAIL CLOSED: fReturn is still FALSE here and is set TRUE only on a
+			// positive membership result below. The previous code stored the
+			// AllocateAndInitializeSid result in fReturn, so any later failure
+			// (OpenTokenByLogonId, CheckTokenMembership) __leave'd with TRUE and
+			// granted access. It also checked membership on the logon session's
+			// token from OpenTokenByLogonId, which may be a primary token -
+			// CheckTokenMembership requires an impersonation token and so could
+			// fail on every call, i.e. every caller was an "administrator".
+			//
+			// Check the CLIENT's effective identity instead: the thread
+			// impersonation token obtained through ImpersonateClient above. A
+			// UAC-filtered administrator carries Administrators as deny-only in
+			// that token, which CheckTokenMembership reports as not a member.
+			dwError = ERROR_ACCESS_DENIED;
+			if (!bImpersonating)
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Not impersonating the client - denying admin access for rid 0x%x", dwRid);
+				__leave;
+			}
+			// If the client was itself impersonating when it called us, refuse an
+			// identification/anonymous-level token: a service coerced into making
+			// the call on behalf of an administrator must not inherit that
+			// administrator's rights here.
+			if (ClientInfo.Impersonating && ClientInfo.ImpersonationLevel < SecurityImpersonation)
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Client impersonation level %d too low - denying", static_cast<int>(ClientInfo.ImpersonationLevel));
+				__leave;
+			}
 			SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
-
-			fReturn = AllocateAndInitializeSid(&NtAuthority,
+			if (!AllocateAndInitializeSid(&NtAuthority,
 						2,
 						SECURITY_BUILTIN_DOMAIN_RID,
 						DOMAIN_ALIAS_RID_ADMINS,
 						0, 0, 0, 0, 0, 0,
-						&AdministratorsGroup);
-			if(!fReturn)
+						&AdministratorsGroup))
 			{
 				dwError = GetLastError();
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"AllocateAndInitializeSid 0x%08x",dwError);
 				__leave;
 			}
-			status = MyLsaDispatchTable->OpenTokenByLogonId(&(ClientInfo.LogonId), &hToken);
-			if (status != STATUS_SUCCESS)
+			// OpenAsSelf = TRUE: open the token with LSASS's own rights, not the
+			// (impersonated) client's, which may not be allowed to query it.
+			if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &hImpToken))
 			{
-				dwError = LsaNtStatusToWinError(status);
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"OpenTokenByLogonId 0x%08x",status);
+				dwError = GetLastError();
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"OpenThreadToken 0x%08x",dwError);
 				__leave;
 			}
-			if (!CheckTokenMembership(hToken, AdministratorsGroup, &fReturn))
+			if (!GetTokenInformation(hImpToken, TokenImpersonationLevel, &ImpersonationLevel, sizeof(ImpersonationLevel), &dwReturnLength))
+			{
+				dwError = GetLastError();
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetTokenInformation(TokenImpersonationLevel) 0x%08x",dwError);
+				__leave;
+			}
+			if (ImpersonationLevel < SecurityImpersonation)
+			{
+				dwError = ERROR_BAD_IMPERSONATION_LEVEL;
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Impersonation level %d too low - denying", static_cast<int>(ImpersonationLevel));
+				__leave;
+			}
+			if (!CheckTokenMembership(hImpToken, AdministratorsGroup, &fIsAdmin))
 			{
 				dwError = GetLastError();
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CheckTokenMembership 0x%08x",dwError);
 				__leave;
 			}
-			// fReturn is TRUE if the token contains admin
-			if (!fReturn)
+			if (fIsAdmin)
+			{
+				dwError = 0;
+				fReturn = TRUE;
+			}
+			else
 			{
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Access denied for rid 0x%x", dwRid);
 			}
@@ -311,8 +357,7 @@ extern "C"
 			{
 				RevertToSelf();
 			}
-			if (hProcess) CloseHandle(hProcess);
-			if (hToken) CloseHandle(hToken);
+			if (hImpToken) CloseHandle(hImpToken);
 			if (pLogonSessionData) LsaFreeReturnBuffer(pLogonSessionData);
 			if (AdministratorsGroup) FreeSid(AdministratorsGroup);
 		}
@@ -603,6 +648,117 @@ extern "C"
 		}
 	}
 
+	// SECURITY: issued-challenge table for the GINA challenge/response pair.
+	//
+	// PerformGinaAuthenticationResponse used to verify the response against
+	// whatever challenge the caller submitted alongside it, so a captured
+	// (challenge, response) pair could be replayed indefinitely. The challenge
+	// handler now records each challenge it hands out, per RID, and the response
+	// handler accepts only a challenge that was issued here, at most
+	// EID_GINA_CHALLENGE_LIFETIME_MS ago, and only once.
+	constexpr DWORD EID_GINA_CHALLENGE_SLOTS = 16;
+	constexpr DWORD EID_GINA_MAX_CHALLENGE_SIZE = 1024;	// RSA-8192 wrapped key
+	constexpr ULONGLONG EID_GINA_CHALLENGE_LIFETIME_MS = 60 * 1000;
+
+	struct EID_GINA_ISSUED_CHALLENGE
+	{
+		BOOL fInUse;
+		DWORD dwRid;
+		DWORD dwChallengeType;
+		ULONGLONG ullIssuedTick;
+		DWORD dwChallengeSize;
+		BYTE rgbChallenge[EID_GINA_MAX_CHALLENGE_SIZE];  // NOSONAR - LSASS-01: fixed buffer, no allocation under the lock
+	};
+
+	static EID_GINA_ISSUED_CHALLENGE s_GinaChallenges[EID_GINA_CHALLENGE_SLOTS];  // NOSONAR - RUNTIME-01: guarded by s_GinaChallengeLock
+	static SRWLOCK s_GinaChallengeLock = SRWLOCK_INIT;  // NOSONAR - RUNTIME-01: lock for s_GinaChallenges
+
+	static void GinaWipeChallengeSlot(EID_GINA_ISSUED_CHALLENGE* pSlot)
+	{
+		SecureZeroMemory(pSlot, sizeof(EID_GINA_ISSUED_CHALLENGE));
+	}
+
+	// Record a challenge issued for dwRid, replacing any earlier one for the same
+	// RID. Returns FALSE (and records nothing) if the challenge cannot be stored.
+	static BOOL GinaRecordIssuedChallenge(DWORD dwRid, DWORD dwChallengeType, const BYTE* pbChallenge, DWORD dwChallengeSize)
+	{
+		if (!pbChallenge || dwChallengeSize == 0 || dwChallengeSize > EID_GINA_MAX_CHALLENGE_SIZE)
+		{
+			return FALSE;
+		}
+		const ULONGLONG ullNow = GetTickCount64();
+		AcquireSRWLockExclusive(&s_GinaChallengeLock);
+		EID_GINA_ISSUED_CHALLENGE* pTarget = nullptr;
+		EID_GINA_ISSUED_CHALLENGE* pOldest = &s_GinaChallenges[0];
+		for (DWORD i = 0; i < EID_GINA_CHALLENGE_SLOTS; i++)
+		{
+			EID_GINA_ISSUED_CHALLENGE* pSlot = &s_GinaChallenges[i];
+			if (pSlot->fInUse && ullNow - pSlot->ullIssuedTick > EID_GINA_CHALLENGE_LIFETIME_MS)
+			{
+				GinaWipeChallengeSlot(pSlot);	// expired
+			}
+			if (pSlot->fInUse && pSlot->dwRid == dwRid)
+			{
+				pTarget = pSlot;				// one outstanding challenge per RID
+				break;
+			}
+			if (!pSlot->fInUse && !pTarget)
+			{
+				pTarget = pSlot;
+			}
+			if (pSlot->fInUse && (!pOldest->fInUse || pSlot->ullIssuedTick < pOldest->ullIssuedTick))
+			{
+				pOldest = pSlot;
+			}
+		}
+		if (!pTarget)
+		{
+			pTarget = pOldest;					// table full: evict the oldest
+		}
+		GinaWipeChallengeSlot(pTarget);
+		pTarget->fInUse = TRUE;
+		pTarget->dwRid = dwRid;
+		pTarget->dwChallengeType = dwChallengeType;
+		pTarget->ullIssuedTick = ullNow;
+		pTarget->dwChallengeSize = dwChallengeSize;
+		memcpy(pTarget->rgbChallenge, pbChallenge, dwChallengeSize);
+		ReleaseSRWLockExclusive(&s_GinaChallengeLock);
+		return TRUE;
+	}
+
+	// Consume the challenge recorded for dwRid. Returns TRUE only if one was
+	// issued, has not expired, and equals the submitted type and bytes
+	// (constant-time compare). The record is removed whatever the outcome:
+	// single use.
+	static BOOL GinaConsumeIssuedChallenge(DWORD dwRid, DWORD dwChallengeType, const BYTE* pbChallenge, DWORD dwChallengeSize)
+	{
+		BOOL fMatch = FALSE;
+		const ULONGLONG ullNow = GetTickCount64();
+		AcquireSRWLockExclusive(&s_GinaChallengeLock);
+		for (DWORD i = 0; i < EID_GINA_CHALLENGE_SLOTS; i++)
+		{
+			EID_GINA_ISSUED_CHALLENGE* pSlot = &s_GinaChallenges[i];
+			if (!pSlot->fInUse || pSlot->dwRid != dwRid)
+			{
+				continue;
+			}
+			if (pbChallenge && ullNow - pSlot->ullIssuedTick <= EID_GINA_CHALLENGE_LIFETIME_MS &&
+				dwChallengeType == pSlot->dwChallengeType && dwChallengeSize == pSlot->dwChallengeSize)
+			{
+				BYTE bDiff = 0;
+				for (DWORD j = 0; j < dwChallengeSize; j++)
+				{
+					bDiff |= static_cast<BYTE>(pSlot->rgbChallenge[j] ^ pbChallenge[j]);
+				}
+				fMatch = (bDiff == 0);
+			}
+			GinaWipeChallengeSlot(pSlot);
+			break;
+		}
+		ReleaseSRWLockExclusive(&s_GinaChallengeLock);
+		return fMatch;
+	}
+
 	NTSTATUS NTAPI PerformGinaAuthenticationChallenge(
 	  __in   PLSA_CLIENT_REQUEST ClientRequest,
 	  __in   PVOID ProtocolSubmitBuffer,
@@ -647,6 +803,19 @@ extern "C"
 			{
 				response.dwError = GetLastError();
 				EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,L"GetChallenge 0x%08X", response.dwError);
+				__leave;
+			}
+			// Remember what was issued so the response handler can refuse a
+			// replayed or caller-invented challenge. If it cannot be recorded,
+			// do not hand it out: the response would be refused anyway.
+			if (!GinaRecordIssuedChallenge(pGina->dwRid, dwType, pbChallenge, dwChallengeSize))
+			{
+				response.dwError = ERROR_INVALID_DATA;
+				EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,L"Unable to record challenge (size %u)", dwChallengeSize);
+				SecureZeroMemory(pbChallenge, dwChallengeSize);
+				EIDFree(pbChallenge);
+				pbChallenge = NULL;
+				dwChallengeSize = 0;
 				__leave;
 			}
 			// success
@@ -730,6 +899,15 @@ extern "C"
 			// put the result in SubStatus
 						
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"RID = 0x%x", pGina->dwRid);
+			// Only accept a challenge that PerformGinaAuthenticationChallenge
+			// issued for this RID, recently, and not already used.
+			if (!GinaConsumeIssuedChallenge(pGina->dwRid, pGina->dwChallengeType, pGina->pbChallenge, pGina->dwChallengeSize))
+			{
+				response.dwError = ERROR_ACCESS_DENIED;
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Challenge not issued, expired or already used for rid 0x%x", pGina->dwRid);
+				EIDSecurityAudit(SECURITY_AUDIT_WARNING, L"[AUTH_REPLAY] Rejected GINA response for rid 0x%x: challenge not issued, expired or already used", pGina->dwRid);
+				__leave;
+			}
 			// the real job is done here
 			if (!manager->GetPasswordFromChallengeResponse(pGina->dwRid,pGina->pbChallenge, pGina->dwChallengeSize, 
 										pGina->dwChallengeType,pGina->pbResponse, pGina->dwResponseSize,&szPassword))

@@ -484,6 +484,17 @@ extern "C"
 					EIDLogErrorWithContext("CopyFromClientBuffer", HRESULT_FROM_NT(Status), nullptr);
 					__leave;
 				}
+				// The (UserLength + 1)th character came from the client too and is
+				// not guaranteed to be a terminator; CredUnmarshalCredential would
+				// read past the allocation looking for one.
+				if (UseUnicode)
+				{
+					static_cast<PWSTR>(szCredential)[pAuthIdentity->UserLength] = L'\0';
+				}
+				else
+				{
+					static_cast<PSTR>(szCredential)[pAuthIdentity->UserLength] = '\0';
+				}
 				BOOL fRes;
 				if (UseUnicode)
 				{
@@ -521,6 +532,16 @@ extern "C"
 					EIDLogErrorWithContext("CopyFromClientBuffer", HRESULT_FROM_NT(Status), nullptr);
 					__leave;
 				}
+				// Same as the user name: force the terminator at PasswordLength so
+				// MultiByteToWideChar(-1) / wcslen cannot run off the buffer.
+				if (UseUnicode)
+				{
+					static_cast<PWSTR>(szPassword)[pAuthIdentity->PasswordLength] = L'\0';
+				}
+				else
+				{
+					static_cast<PSTR>(szPassword)[pAuthIdentity->PasswordLength] = '\0';
+				}
 				// convert to unicode
 				if (UseUnicode)
 				{
@@ -536,7 +557,13 @@ extern "C"
 						EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EIDAlloc"); 
 						__leave;
 					}
-					MultiByteToWideChar(CP_UTF8, 0, (PSTR) szPassword, -1, szPasswordW, pAuthIdentity->PasswordLength + 1);
+					if (!MultiByteToWideChar(CP_UTF8, 0, (PSTR) szPassword, -1, szPasswordW, pAuthIdentity->PasswordLength + 1))
+					{
+						Status = SEC_E_UNKNOWN_CREDENTIALS;
+						EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"MultiByteToWideChar 0x%08x", GetLastError());
+						__leave;
+					}
+					szPasswordW[pAuthIdentity->PasswordLength] = L'\0';
 				}
 			}
 			else
@@ -572,7 +599,7 @@ extern "C"
 			if (pAuthIdentityEx)
 				MyLsaDispatchTable->FreeLsaHeap(pAuthIdentityEx);
 		}
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Credential %p Status = 0x%08x",*pCredentialHandle, Status);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Credential %p Status = 0x%08x",reinterpret_cast<PVOID>(*pCredentialHandle), Status);
 		return Status;
 	}
 
@@ -581,10 +608,10 @@ extern "C"
 		__in LSA_SEC_HANDLE                 CredentialHandle        // Handle to free
     )
 	{
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Credential %p",CredentialHandle);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Credential %p",reinterpret_cast<PVOID>(CredentialHandle));
 		if (!CCredential::Delete(CredentialHandle))
 		{
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Credential %p not found",CredentialHandle);
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Credential %p not found",reinterpret_cast<PVOID>(CredentialHandle));
 			return STATUS_INVALID_HANDLE;
 		}
 		return STATUS_SUCCESS;
@@ -660,13 +687,18 @@ extern "C"
 		)
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Enter CredentialAttribute = %d",CredentialAttribute);
+		// SECURITY: LSA-mode dispatch - Buffer is an address in the CLIENT
+		// process. Build the structure locally and CopyToClientBuffer it, as
+		// SpQueryContextAttributes does; never write through Buffer directly.
 		NTSTATUS status = STATUS_SUCCESS;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
 		PTSTR szName;
 		DWORD dwSize;
+		PVOID pClientName = NULL;
+		SecPkgCredentials_Names CredNames;
 		CCredential* pCredential = CCredential::GetCredentialFromHandle(CredentialHandle);
 		if (!pCredential)
 		{
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CredentialHandle = %d : STATUS_INVALID_HANDLE",CredentialHandle);
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CredentialHandle = %p : STATUS_INVALID_HANDLE",reinterpret_cast<PVOID>(CredentialHandle));
 			return STATUS_INVALID_HANDLE;
 		}
 		switch(CredentialAttribute)  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
@@ -682,13 +714,21 @@ extern "C"
 						__leave;
 					}
 					dwSize = static_cast<DWORD>((_tcslen(szName)+1) * sizeof(TCHAR));
-					status = MyLsaDispatchTable->AllocateClientBuffer(NULL, dwSize, reinterpret_cast<PVOID*>(Buffer));  // NOSONAR - CAST-01: Win32/LSA interop cast, layout-verified
+					status = MyLsaDispatchTable->AllocateClientBuffer(NULL, dwSize, &pClientName);
 					if (status != STATUS_SUCCESS)
 					{
+						pClientName = NULL;
 						EIDLogErrorWithContext("AllocateClientBuffer", HRESULT_FROM_NT(status), nullptr);
 						__leave;
 					}
-					status = MyLsaDispatchTable->CopyToClientBuffer(NULL, dwSize, *reinterpret_cast<PVOID*>(Buffer), szName);  // NOSONAR - CAST-01: Win32/LSA interop cast, layout-verified
+					status = MyLsaDispatchTable->CopyToClientBuffer(NULL, dwSize, pClientName, szName);
+					if (status != STATUS_SUCCESS)
+					{
+						EIDLogErrorWithContext("CopyToClientBuffer", HRESULT_FROM_NT(status), nullptr);
+						__leave;
+					}
+					CredNames.sUserName = static_cast<decltype(CredNames.sUserName)>(pClientName);
+					status = MyLsaDispatchTable->CopyToClientBuffer(NULL, sizeof(CredNames), Buffer, &CredNames);
 					if (status != STATUS_SUCCESS)
 					{
 						EIDLogErrorWithContext("CopyToClientBuffer", HRESULT_FROM_NT(status), nullptr);
@@ -698,7 +738,10 @@ extern "C"
 				}
 				__finally
 				{
-					// NOSONAR - SEH-01: Empty __finally required for SEH completeness
+					if (status != STATUS_SUCCESS && pClientName)
+					{
+						MyLsaDispatchTable->FreeClientBuffer(NULL, pClientName);
+					}
 				}
 				EIDLogErrorWithContext("QueryContextAttributes", HRESULT_FROM_NT(status), L"attr=SECPKG_CRED_ATTR_NAMES");
 				return status;
@@ -721,10 +764,10 @@ extern "C"
 		__in LSA_SEC_HANDLE                 phContext           // Context to delete
     )
 	{
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"delete Context 0x%08X",phContext);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"delete Context %p",reinterpret_cast<PVOID>(phContext));
 		if (!CSecurityContext::Delete(phContext))
 		{
-			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Context 0x%08X not found",phContext);
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Context %p not found",reinterpret_cast<PVOID>(phContext));
 			return SEC_E_INVALID_HANDLE;
 		}
 		return SEC_E_OK;
@@ -777,13 +820,13 @@ extern "C"
 			{
 				if (!ContextHandle)
 				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ContextHandle = %d",ContextHandle);
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ContextHandle = %p",reinterpret_cast<PVOID>(ContextHandle));
 					return STATUS_INVALID_HANDLE;
 				}
 				pContext = CSecurityContext::GetContextFromHandle(ContextHandle);
 				if (!pContext)
 				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ContextHandle = %d : SEC_E_INVALID_HANDLE",ContextHandle);
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ContextHandle = %p : SEC_E_INVALID_HANDLE",reinterpret_cast<PVOID>(ContextHandle));
 					return SEC_E_INVALID_HANDLE;
 				}
 				PWSTR szUserName = pContext->GetUserName();  // LSA heap copy, freed below
@@ -893,7 +936,7 @@ extern "C"
 				CSecurityContext* currentContext = CSecurityContext::GetContextFromHandle(ContextHandle);
 				if (currentContext == NULL)
 				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"currentContext = %d",currentContext);
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"currentContext = %p",currentContext);
 					Status = SEC_E_INVALID_HANDLE;
 					__leave;
 				}
@@ -945,6 +988,7 @@ extern "C"
 		DWORD dwTotalEntries;
 		NET_API_STATUS NetStatus ;
 		DWORD dwI;
+		LARGE_INTEGER AccountExpirationTime;
 		__try
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Enter");
@@ -959,8 +1003,13 @@ extern "C"
 			// create the sid from the rid
 			
 			NetStatus = NetUserEnum(NULL, 3, 0, reinterpret_cast<PBYTE*>(&pInfo), MAX_PREFERRED_LENGTH, &dwEntriesRead,&dwTotalEntries, NULL);  // NOSONAR - CAST-01: Win32/LSA interop cast, layout-verified
+			// Every failure below must set Status: it starts as STATUS_SUCCESS,
+			// and a "successful" return with *phToken == INVALID_HANDLE_VALUE
+			// would have the caller DuplicateHandle the LSASS process
+			// pseudo-handle into the client.
 			if (NetStatus != NERR_Success)
 			{
+				Status = STATUS_LOGON_FAILURE;
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"NetUserEnum = 0x%08X",NetStatus);
 				__leave;
 			}
@@ -974,7 +1023,19 @@ extern "C"
 			}
 			if (dwI >= dwEntriesRead)
 			{
+				Status = STATUS_LOGON_FAILURE;
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Userid not found");
+				__leave;
+			}
+			// Account restrictions (disabled, locked out, expired, logon hours,
+			// workstation) - the same check the interactive logon path performs
+			// through UserNameToToken. A network token must not be issued for an
+			// account that could not log on interactively.
+			Status = CheckAuthorization(szUserName, &SubStatus, &AccountExpirationTime);
+			if (Status != STATUS_SUCCESS)
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CheckAuthorization failed 0x%08X 0x%08X",Status, SubStatus);
+				EIDSecurityAudit(SECURITY_AUDIT_FAILURE, L"[AUTH_RESTRICTED] SSP network logon refused for user '%s': account restriction 0x%08X/0x%08X", szUserName, Status, SubStatus);
 				__leave;
 			}
 			dwSize = ARRAYSIZE(szComputer);
@@ -990,7 +1051,7 @@ extern "C"
 			Status = MyLsaDispatchTable->GetAuthDataForUser(reinterpret_cast<PSECURITY_STRING>(&AccountName), SecNameSamCompatible, reinterpret_cast<PSECURITY_STRING>(&Prefix), reinterpret_cast<PUCHAR*>(&MyTokenInformation), &TokenLength, NULL);  // NOSONAR - CAST-01: Win32/LSA interop cast, layout-verified
 			if (Status != STATUS_SUCCESS) 
 			{
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"UserNameToToken failed 0x%08X 0x%08X",Status, SubStatus);
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetAuthDataForUser failed 0x%08X 0x%08X",Status, SubStatus);
 				__leave;
 			}
 			Status = MyLsaDispatchTable->ConvertAuthDataToToken(MyTokenInformation, TokenLength, SecurityImpersonation, &tokenSource,
@@ -1000,12 +1061,16 @@ extern "C"
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CreateToken failed 0x%08X 0x%08X",Status, SubStatus);
 				__leave;
 			}
-			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Token = 0x%08X",*phToken);
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Token = %p",*phToken);
 		}
 		__finally
 		{
 			if (pInfo)
 				NetApiBufferFree(pInfo);
+			// GetAuthDataForUser allocates the auth data from the LSA heap; it
+			// was never freed, leaking it on every accepted context.
+			if (MyTokenInformation)
+				MyLsaDispatchTable->FreeLsaHeap(MyTokenInformation);
 		}
 		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Leave with Status = 0x%08X",Status);
 		return Status;
@@ -1035,7 +1100,7 @@ extern "C"
 		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Enter");
 		NTSTATUS Status = STATUS_SUCCESS;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
 		PEID_SSP_CALLBACK_MESSAGE callbackMessage = NULL;
-		HANDLE hToken;  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
+		HANDLE hToken = NULL;  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
 		__try
 		{
 			CSecurityContext* newContext = NULL;
@@ -1100,6 +1165,7 @@ extern "C"
 			callbackMessage = static_cast<PEID_SSP_CALLBACK_MESSAGE>(EIDAlloc(sizeof(EID_SSP_CALLBACK_MESSAGE)));
 			if (!callbackMessage)
 			{
+				Status = SEC_E_INSUFFICIENT_MEMORY;
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"callbackMessage no memory");
 				__leave;
 			}
@@ -1111,7 +1177,7 @@ extern "C"
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"DuplicateHandle = 0x%08X",Status);
 				__leave;
 			}
-			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"token = 0x%08X",callbackMessage->hToken);
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"token = %p",callbackMessage->hToken);
 			*MappedContext = TRUE;
 			ContextData->BufferType = SECBUFFER_DATA;
 			ContextData->cbBuffer = sizeof(EID_SSP_CALLBACK_MESSAGE);
@@ -1125,6 +1191,11 @@ extern "C"
 				if (callbackMessage)  // NOSONAR - COMPLEXITY-01: nested guard retained for readability; logic verified
 					EIDFree(callbackMessage);
 			}
+			// The client gets its own copy through DuplicateHandle; LSASS's
+			// handle to the token was never closed, leaking one token handle
+			// (and the logon session it pins) per accepted context.
+			if (hToken && hToken != INVALID_HANDLE_VALUE)
+				CloseHandle(hToken);
 		}
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Status = 0x%08X",Status);
 		return Status;
