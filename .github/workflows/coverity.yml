@@ -25,6 +25,8 @@ concurrency:
 
 env:
   COVERITY_PROJECT: SP00KY-CB/OpenAccessEID
+  # Numeric id used by the build upload API (scan.coverity.com/projects/33308).
+  COVERITY_PROJECT_ID: '33308'
 
 jobs:
   coverity:
@@ -94,6 +96,12 @@ jobs:
       - name: Compress the capture
         run: tar -czf cov-int.tgz cov-int
 
+      # Coverity Scan's build API: init returns a one-time upload URL and a
+      # build id, the capture is PUT to that URL, then the build is queued.
+      # Each call answers with a status code and a short message (a bad token
+      # gets 401), so a rejection fails the step with Coverity's reason. The
+      # older /builds form endpoint redirects to a login-only page whether or
+      # not the upload was accepted, so its response cannot be checked.
       - name: Submit to Coverity Scan
         env:
           COVERITY_SCAN_TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
@@ -102,25 +110,36 @@ jobs:
           DESCRIPTION: ${{ github.workflow }} run ${{ github.run_id }} on ${{ github.ref_name }}
         run: |
           if (-not $env:COVERITY_SCAN_EMAIL) { throw 'COVERITY_SCAN_EMAIL is not set' }
-          $form = @{
-            token       = $env:COVERITY_SCAN_TOKEN
-            email       = $env:COVERITY_SCAN_EMAIL
-            file        = Get-Item cov-int.tgz
-            version     = $env:VERSION
-            description = $env:DESCRIPTION
+          $api = "https://scan.coverity.com/projects/$env:COVERITY_PROJECT_ID/builds"
+
+          function Invoke-Coverity([string]$Step, [hashtable]$Request) {
+            $r = Invoke-WebRequest @Request -SkipHttpErrorCheck
+            $text = ([string]$r.Content).Trim()
+            if ($r.StatusCode -ge 300) {
+              if ($text.Length -gt 300) { $text = $text.Substring(0, 300) + '...' }
+              throw "Coverity Scan $Step failed (HTTP $($r.StatusCode)): $text"
+            }
+            return $text
           }
-          $uri = 'https://scan.coverity.com/builds?project=' + [uri]::EscapeDataString($env:COVERITY_PROJECT)
-          $response = Invoke-WebRequest -Method Post -Uri $uri -Form $form -SkipHttpErrorCheck
-          $body = [string]$response.Content
-          # A rejected upload is redirected to an HTML page carrying the reason
-          # in an alert box, and still ends in HTTP 200, so check the body.
-          if ($response.StatusCode -lt 300 -and $body -match 'successfully submitted') {
-            Write-Host "Coverity Scan accepted the build: $($body.Trim())"
-            exit 0
+
+          $init = Invoke-Coverity 'build init' @{
+            Method = 'Post'; Uri = "$api/init"
+            Body   = @{
+              token       = $env:COVERITY_SCAN_TOKEN
+              email       = $env:COVERITY_SCAN_EMAIL
+              file_name   = 'cov-int.tgz'
+              version     = $env:VERSION
+              description = $env:DESCRIPTION
+            }
+          } | ConvertFrom-Json
+          if (-not $init.url -or -not $init.build_id) { throw "Unexpected init response: $($init | ConvertTo-Json -Compress)" }
+
+          Invoke-Coverity 'upload' @{
+            Method = 'Put'; Uri = $init.url; InFile = 'cov-int.tgz'; ContentType = 'application/json'
+          } | Out-Null
+
+          $queued = Invoke-Coverity 'enqueue' @{
+            Method = 'Put'; Uri = "$api/$($init.build_id)/enqueue"
+            Body   = @{ token = $env:COVERITY_SCAN_TOKEN }
           }
-          $reason = [regex]::Match($body, '(?s)class="alert[^"]*">\s*(?:<button[^>]*>.*?</button>)?\s*(.*?)\s*</div>').Groups[1].Value
-          if (-not $reason) {
-            $reason = ($body -replace '<[^>]+>', ' ' -replace '\s+', ' ').Trim()
-            if ($reason.Length -gt 300) { $reason = $reason.Substring(0, 300) + '...' }
-          }
-          throw "Coverity Scan rejected the upload (HTTP $($response.StatusCode)): $reason"
+          Write-Host "Coverity Scan queued build $($init.build_id) for analysis: $queued"
