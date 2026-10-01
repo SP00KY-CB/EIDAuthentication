@@ -228,6 +228,20 @@ BOOL EncryptPasswordWithDPAPI(__in PWSTR szPassword, __in USHORT usPasswordSize,
     return TRUE;
 }
 
+// CryptAcquireCertificatePrivateKey errors after which the PIV fallback (the
+// provider's default container) may be tried: the container named in the
+// certificate's CERT_KEY_PROV_INFO does not exist on the card, which is how a
+// PIV card whose container name differs from the enrolment-time one fails.
+// Any other error (no card, wrong reader, provider failure, ...) must be
+// reported as is: falling back on it used to open whatever card the provider
+// picked by default and hand it the PIN.
+bool IsPivFallbackError(DWORD dwError) noexcept
+{
+    return dwError == static_cast<DWORD>(NTE_BAD_KEYSET)
+        || dwError == static_cast<DWORD>(NTE_KEYSET_NOT_DEF)
+        || dwError == static_cast<DWORD>(SCARD_E_NO_KEY_CONTAINER);
+}
+
 } // anonymous namespace
 
 // SonarQube S134: Won't Fix - SEH-protected function (__try/__finally)
@@ -421,16 +435,19 @@ BOOL CStoredCredentialManager::GetCertContextFromRid(__in DWORD dwRid, __out PCC
 	DWORD dwError = 0;
 	__try
 	{
-		if (!dwRid)
-		{
-			dwError = ERROR_NONE_MAPPED;
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"dwRid 0x%08x",dwError);
-			__leave;
-		}
 		if (!ppContext)
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"ppContext null");
 			dwError = ERROR_INVALID_PARAMETER;
+			__leave;
+		}
+		// Initialise the out parameter before anything else can fail, so the
+		// cleanup below never releases a caller's uninitialised pointer.
+		*ppContext = nullptr;
+		if (!dwRid)
+		{
+			dwError = ERROR_NONE_MAPPED;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"dwRid 0x%08x",dwError);
 			__leave;
 		}
 		if (!pfEncryptPassword)
@@ -460,13 +477,116 @@ BOOL CStoredCredentialManager::GetCertContextFromRid(__in DWORD dwRid, __out PCC
 	}
 	__finally
 	{
-		if (!fReturn)
+		// ppContext is NULL when the parameter check above failed.
+		if (!fReturn && ppContext && *ppContext)
 		{
 			CertFreeCertificateContext(*ppContext);
 			*ppContext = nullptr;
 		}
 		EIDFreePrivateData(pEidPrivateData, dwPrivateDataSize);
 		pEidPrivateData = nullptr;
+	}
+	SetLastError(dwError);
+	return fReturn;
+}
+
+// Returns TRUE when the check completed, with *pfBoundElsewhere set when the
+// certificate (same DER, or same SHA-256 hash as stored in the blob) is already
+// held by the stored credential of an account other than dwRid. Enumerates
+// stored credentials the same way GetUsernameFromCertContext does.
+// When dwRid already holds exactly this certificate the binding already exists
+// and the enumeration is skipped: that is the re-seal path (UpdateCredential,
+// reached from PasswordChangeNotify and SpAcceptCredentials), which must not
+// start issuing SAM enumerations.
+// SonarQube S134: Won't Fix - SEH-protected function (__try/__finally)
+// Code cannot be extracted from __try blocks per LSASS safety requirements
+BOOL CStoredCredentialManager::IsCertificateBoundToOtherRid(__in DWORD dwRid, __in PCCERT_CONTEXT pContext, __out PBOOL pfBoundElsewhere)
+{
+	NET_API_STATUS Status;
+	PUSER_INFO_3 pUserInfo = nullptr;
+	DWORD dwEntriesRead = 0;
+	DWORD dwTotalEntries = 0;
+	BOOL fReturn = FALSE;
+	BOOL fMatched = FALSE;
+	PEID_PRIVATE_DATA pPrivateData = nullptr;
+	DWORD dwPrivateDataSize = 0;
+	DWORD dwError = 0;
+	BYTE bHash[CERT_HASH_LENGTH] = {0};  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
+	DWORD dwHashSize = sizeof(bHash);
+	__try
+	{
+		if (!pContext || !pfBoundElsewhere)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"pContext or pfBoundElsewhere null");
+			dwError = ERROR_INVALID_PARAMETER;
+			__leave;
+		}
+		*pfBoundElsewhere = FALSE;
+		if (!CryptHashCertificate(NULL, CALG_SHA_256, 0, pContext->pbCertEncoded, pContext->cbCertEncoded, bHash, &dwHashSize)
+			|| dwHashSize != CERT_HASH_LENGTH)
+		{
+			dwError = GetLastError();
+			if (dwError == 0)
+			{
+				dwError = ERROR_INVALID_DATA;
+			}
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CryptHashCertificate 0x%08x",dwError);
+			__leave;
+		}
+		// Fast path: this account already holds exactly this certificate.
+		if (dwRid && RetrievePrivateData(dwRid, &pPrivateData, &dwPrivateDataSize))
+		{
+			fMatched = (pPrivateData->dwCertificatSize == pContext->cbCertEncoded &&
+				memcmp(pPrivateData->Data + pPrivateData->dwCertificatOffset, pContext->pbCertEncoded, pContext->cbCertEncoded) == 0);
+			EIDFreePrivateData(pPrivateData, dwPrivateDataSize);
+			pPrivateData = nullptr;
+			if (fMatched)
+			{
+				fReturn = TRUE;
+				__leave;
+			}
+		}
+		Status = NetUserEnum(nullptr, 3,0, (PBYTE*) &pUserInfo, MAX_PREFERRED_LENGTH, &dwEntriesRead, &dwTotalEntries, nullptr);
+		if (Status != NERR_Success)
+		{
+			// Fail closed: without the enumeration the binding cannot be checked.
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"NetUserEnum 0x%08x",Status);
+			dwError = Status;
+			__leave;
+		}
+		for (DWORD dwI = 0; dwI < dwEntriesRead; dwI++)
+		{
+			if (pUserInfo[dwI].usri3_user_id == dwRid)
+			{
+				continue;
+			}
+			dwPrivateDataSize = 0;
+			if (RetrievePrivateData(pUserInfo[dwI].usri3_user_id, &pPrivateData, &dwPrivateDataSize))
+			{
+				fMatched = (pPrivateData->dwCertificatSize == pContext->cbCertEncoded &&
+					memcmp(pPrivateData->Data + pPrivateData->dwCertificatOffset, pContext->pbCertEncoded, pContext->cbCertEncoded) == 0)
+					|| memcmp(pPrivateData->Hash, bHash, CERT_HASH_LENGTH) == 0;
+				EIDFreePrivateData(pPrivateData, dwPrivateDataSize);
+				pPrivateData = nullptr;
+				if (fMatched)
+				{
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"certificate already enrolled to rid 0x%x", pUserInfo[dwI].usri3_user_id);
+					*pfBoundElsewhere = TRUE;
+					break;
+				}
+			}
+		}
+		fReturn = TRUE;
+	}
+	__finally
+	{
+		if (pPrivateData)
+		{
+			EIDFreePrivateData(pPrivateData, dwPrivateDataSize);
+			pPrivateData = nullptr;
+		}
+		if (pUserInfo)
+			NetApiBufferFree(pUserInfo);
 	}
 	SetLastError(dwError);
 	return fReturn;
@@ -508,6 +628,7 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 	HCRYPTPROV hProv = NULL;  // NOSONAR - HANDLE-01: HCRYPTPROV is ULONG_PTR, not pointer type
 	PBYTE pbPublicKey = nullptr;
 	DWORD dwSize = 0;
+	BOOL fBoundElsewhere = FALSE;
 
 	__try
 	{
@@ -540,6 +661,32 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"CheckPassword 0x%08x", dwError);
 				__leave;
 			}
+		}
+
+		// SECURITY: one certificate, one account. Logon maps a card to an account
+		// with GetUsernameFromCertContext / GetCertContextFromHash, which return
+		// the FIRST stored credential holding the certificate. A certificate is
+		// public, so a standard user could otherwise enrol an administrator's
+		// certificate on their own account and, if their account enumerates
+		// first, have the administrator's card log on to it. Refuse to bind a
+		// certificate that is already bound to a different account; re-enrolling
+		// or re-sealing the same account is unaffected.
+		if (!IsCertificateBoundToOtherRid(dwRid, pCertContext, &fBoundElsewhere))
+		{
+			dwError = GetLastError();
+			if (dwError == 0)
+			{
+				dwError = ERROR_INTERNAL_ERROR;
+			}
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"IsCertificateBoundToOtherRid 0x%08x", dwError);
+			__leave;
+		}
+		if (fBoundElsewhere)
+		{
+			dwError = ERROR_ALREADY_EXISTS;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"certificate already enrolled to another account - refusing enrolment for rid 0x%x", dwRid);
+			EIDSecurityAudit(SECURITY_AUDIT_FAILURE, L"[ENROL_REJECT] Refused to enrol a certificate for rid 0x%x: it is already bound to another account", dwRid);
+			__leave;
 		}
 
 		// Calculate password size
@@ -892,7 +1039,6 @@ BOOL CStoredCredentialManager::GetChallenge(__in DWORD dwRid, __out PBYTE* ppCha
 	DWORD dwError = 0;
 	PEID_PRIVATE_DATA pEidPrivateData = nullptr;
 	DWORD dwPrivateDataSize = 0;   // allocation size, for the cleanup zeroize
-	HCRYPTPROV hProv = NULL;  // Windows handle type - keep as NULL
 	__try
 	{
 		if (!dwRid)
@@ -958,6 +1104,7 @@ BOOL CStoredCredentialManager::GetChallenge(__in DWORD dwRid, __out PBYTE* ppCha
 			}
 			break;
 		default:
+			dwError = ERROR_INVALID_DATA;
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"dwType not implemented");
 			__leave;
 		}
@@ -971,11 +1118,6 @@ BOOL CStoredCredentialManager::GetChallenge(__in DWORD dwRid, __out PBYTE* ppCha
 			// other blob consumers do.
 			EIDFreePrivateData(pEidPrivateData, dwPrivateDataSize);
 			pEidPrivateData = nullptr;
-		}
-		if (hProv)
-		{
-			CryptReleaseContext(hProv, 0);
-			CryptAcquireContext(&hProv,CREDENTIAL_CONTAINER,CREDENTIALPROVIDER,PROV_RSA_AES,CRYPT_DELETEKEYSET);
 		}
 	}
 	SetLastError(dwError);
@@ -1282,8 +1424,15 @@ BOOL CStoredCredentialManager::GetResponseFromChallenge(__in PBYTE pChallenge, _
 		return GetResponseFromSignatureChallenge(pChallenge,dwChallengeSize,pCertContext,Pin,pSymetricKey,usSize);
 	case static_cast<DWORD>(EID_PRIVATE_DATA_TYPE::eidpdtCrypted):  // NOSONAR - ENUM-01: enum-to-underlying cast for Win32/ABI compatibility
 		return GetResponseFromCryptedChallenge(pChallenge,dwChallengeSize,pCertContext,Pin,pSymetricKey,usSize);
+	case static_cast<DWORD>(EID_PRIVATE_DATA_TYPE::eidpdtDPAPI):  // NOSONAR - ENUM-01: enum-to-underlying cast for Win32/ABI compatibility
+		// GetChallenge issues a signature challenge for DPAPI credentials and
+		// GetPasswordFromDPAPIChallengeResponse verifies a signature, so the card
+		// answers exactly as for the clear-text type. This case was missing, so
+		// every DPAPI-credential logon failed here without an error code.
+		return GetResponseFromSignatureChallenge(pChallenge,dwChallengeSize,pCertContext,Pin,pSymetricKey,usSize);
 	default:
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Type not implemented");
+		SetLastError(ERROR_INVALID_DATA);
 		return FALSE;
 	}
 }
@@ -1296,9 +1445,9 @@ BOOL CStoredCredentialManager::GetResponseFromCryptedChallenge(__in PBYTE pChall
 	HCRYPTPROV hProv = NULL;  // Windows handle type - keep as NULL
 	DWORD dwKeySpec;
 	BOOL fCallerFreeProv = FALSE;
-	HCRYPTKEY hCertKey = NULL;  // Windows handle type - keep as NULL
 	LPSTR pbPin = nullptr;
 	DWORD dwPinLen = 0;
+	int cbPin = 0;
 	HCRYPTKEY hKey = NULL;  // Windows handle type - keep as NULL
 	DWORD dwSize;
 	DWORD dwBlockLen = 20000;
@@ -1346,16 +1495,29 @@ BOOL CStoredCredentialManager::GetResponseFromCryptedChallenge(__in PBYTE pChall
 		if (!CryptAcquireCertificatePrivateKey(pCertContext,CRYPT_ACQUIRE_SILENT_FLAG | CRYPT_ACQUIRE_USE_PROV_INFO_FLAG,nullptr,&hProv,&dwKeySpec,&fCallerFreeProv))
 		{
 			dwError = GetLastError();
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by CryptAcquireCertificatePrivateKey", GetLastError());
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by CryptAcquireCertificatePrivateKey", dwError);
+			// Only a missing key container may fall back to the provider's
+			// default container; any other failure is reported unchanged.
+			if (!IsPivFallbackError(dwError))
+			{
+				__leave;
+			}
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"PIV fallback");
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE, L"Keyspec %S container %s provider %s", (pProvInfo->dwKeySpec == AT_SIGNATURE ?"AT_SIGNATURE":"AT_KEYEXCHANGE"),
 					pProvInfo->pwszContainerName, pProvInfo->pwszProvName);
+			dwKeySpec = pProvInfo->dwKeySpec;
+			hProv = NULL;
 			if (!CryptAcquireContext(&hProv, nullptr, pProvInfo->pwszProvName, pProvInfo->dwProvType, CRYPT_SILENT))
 			{
-				dwError = GetLastError();
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by CryptAcquireContext", GetLastError());
+				// Keep the original CryptAcquireCertificatePrivateKey error.
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by CryptAcquireContext (PIV fallback)", GetLastError());
+				hProv = NULL;
 				__leave;
 			}
+			// This handle is ours, not cached on the certificate context:
+			// without this it leaked from LSASS on every logon down this path.
+			fCallerFreeProv = TRUE;
+			dwError = 0;
 		}
 
 		if (!CryptGetUserKey(hProv, dwKeySpec, &hKey))
@@ -1364,7 +1526,16 @@ BOOL CStoredCredentialManager::GetResponseFromCryptedChallenge(__in PBYTE pChall
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by CryptGetUserKey", GetLastError());
 			__leave;
 		}
-		dwPinLen = (DWORD) (wcslen(Pin) + sizeof(CHAR));
+		// Size the UTF-8 PIN from the conversion itself: a non-ASCII character
+		// takes up to three bytes, so wcslen(Pin)+1 was too small for it.
+		cbPin = WideCharToMultiByte(CP_UTF8, 0, Pin, -1, nullptr, 0, nullptr, nullptr);
+		if (cbPin <= 0)
+		{
+			dwError = GetLastError();
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by WideCharToMultiByte", dwError);
+			__leave;
+		}
+		dwPinLen = static_cast<DWORD>(cbPin);
 		pbPin = (LPSTR) EIDAlloc(dwPinLen);
 		if (!pbPin)
 		{
@@ -1372,7 +1543,7 @@ BOOL CStoredCredentialManager::GetResponseFromCryptedChallenge(__in PBYTE pChall
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by EIDAlloc", GetLastError());
 			__leave;
 		}
-		if (!WideCharToMultiByte(CP_UTF8, 0, Pin, -1, pbPin, dwPinLen, nullptr, nullptr))
+		if (!WideCharToMultiByte(CP_UTF8, 0, Pin, -1, pbPin, cbPin, nullptr, nullptr))
 		{
 			dwError = GetLastError();
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by WideCharToMultiByte", GetLastError());
@@ -1424,7 +1595,8 @@ BOOL CStoredCredentialManager::GetResponseFromCryptedChallenge(__in PBYTE pChall
 	}
 	__finally
 	{
-		if (!fReturn && *pSymetricKey)
+		// pSymetricKey is NULL when the parameter check above failed.
+		if (!fReturn && pSymetricKey && *pSymetricKey)
 		{
 			EIDFree(*pSymetricKey );
 			*pSymetricKey = nullptr;
@@ -1436,8 +1608,6 @@ BOOL CStoredCredentialManager::GetResponseFromCryptedChallenge(__in PBYTE pChall
 		}
 		if (hKey)
 			CryptDestroyKey(hKey);
-		if (hCertKey)
-			CryptDestroyKey(hCertKey);
 		if (fCallerFreeProv && hProv) 
 			CryptReleaseContext(hProv,0);
 		if (pProvInfo) 
@@ -1458,9 +1628,9 @@ BOOL CStoredCredentialManager::GetResponseFromSignatureChallenge(__in PBYTE pbCh
 	HCRYPTPROV hProv = NULL;  // Windows handle type - keep as NULL
 	DWORD dwKeySpec;
 	BOOL fCallerFreeProv = FALSE;
-	HCRYPTKEY hCertKey = NULL;  // Windows handle type - keep as NULL
 	HCRYPTHASH hHash = NULL;  // Windows handle type - keep as NULL
 	DWORD dwPinLen = 0;
+	int cbPin = 0;
 	DWORD dwError = 0;
 	LPCWSTR sDescription = L"";
 	PCRYPT_KEY_PROV_INFO pKeyProvInfo = nullptr;
@@ -1488,34 +1658,55 @@ BOOL CStoredCredentialManager::GetResponseFromSignatureChallenge(__in PBYTE pbCh
 		}
 		*pdwResponseSize = 0;
 		dwKeySpec = pKeyProvInfo->dwKeySpec;
+		// Security: validate the CSP provider before loading it, exactly as
+		// GetResponseFromCryptedChallenge does (it used to be checked only on
+		// the fallback below).
+		if (!IsAllowedCSPProvider(pKeyProvInfo->pwszProvName))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR, L"CSP provider '%s' not allowed", pKeyProvInfo->pwszProvName);
+			dwError = ERROR_ACCESS_DENIED;
+			__leave;
+		}
 		if (!CryptAcquireCertificatePrivateKey(pCertContext,CRYPT_ACQUIRE_SILENT_FLAG | CRYPT_ACQUIRE_USE_PROV_INFO_FLAG,nullptr,&hProv,&dwKeySpec,&fCallerFreeProv))
 		{
 			dwError = GetLastError();
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by CryptAcquireCertificatePrivateKey", GetLastError());
-			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"PIV fallback");
-			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE, L"Keyspec %S container %s provider %s", (pKeyProvInfo->dwKeySpec == AT_SIGNATURE ?"AT_SIGNATURE":"AT_KEYEXCHANGE"),
-					pKeyProvInfo->pwszContainerName, pKeyProvInfo->pwszProvName);
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by CryptAcquireCertificatePrivateKey", dwError);
 			// Same fallback as GetResponseFromCryptedChallenge, so that a card whose
 			// encrypted credential can be unwrapped there can also answer the
 			// proof-of-possession signature that GetPassword now requires for it.
 			// Whatever key signs here is still checked against the stored
-			// certificate's public key by the verifier.
-			if (!IsAllowedCSPProvider(pKeyProvInfo->pwszProvName))
+			// certificate's public key by the verifier. Only a missing key
+			// container may fall back; any other failure is reported unchanged
+			// rather than sending the PIN to the provider's default card.
+			if (!IsPivFallbackError(dwError))
 			{
-				EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR, L"CSP provider '%s' not allowed", pKeyProvInfo->pwszProvName);
-				dwError = ERROR_ACCESS_DENIED;
 				__leave;
 			}
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"PIV fallback");
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE, L"Keyspec %S container %s provider %s", (pKeyProvInfo->dwKeySpec == AT_SIGNATURE ?"AT_SIGNATURE":"AT_KEYEXCHANGE"),
+					pKeyProvInfo->pwszContainerName, pKeyProvInfo->pwszProvName);
+			dwKeySpec = pKeyProvInfo->dwKeySpec;
+			hProv = NULL;
 			if (!CryptAcquireContext(&hProv, nullptr, pKeyProvInfo->pwszProvName, pKeyProvInfo->dwProvType, CRYPT_SILENT))
 			{
-				dwError = GetLastError();
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by CryptAcquireContext", GetLastError());
+				// Keep the original CryptAcquireCertificatePrivateKey error.
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by CryptAcquireContext (PIV fallback)", GetLastError());
+				hProv = NULL;
 				__leave;
 			}
 			fCallerFreeProv = TRUE;
 			dwError = 0;
 		}
-		dwPinLen = (DWORD) wcslen(szPin) + 1;
+		// Size the UTF-8 PIN from the conversion itself: a non-ASCII character
+		// takes up to three bytes, so wcslen(szPin)+1 was too small for it.
+		cbPin = WideCharToMultiByte(CP_UTF8, 0, szPin, -1, nullptr, 0, nullptr, nullptr);
+		if (cbPin <= 0)
+		{
+			dwError = GetLastError();
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by WideCharToMultiByte", dwError);
+			__leave;
+		}
+		dwPinLen = static_cast<DWORD>(cbPin);
 		pbPin = (LPSTR) EIDAlloc(dwPinLen);
 		if (!pbPin)
 		{
@@ -1523,7 +1714,7 @@ BOOL CStoredCredentialManager::GetResponseFromSignatureChallenge(__in PBYTE pbCh
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by malloc", GetLastError());
 			__leave;
 		}
-		if (!WideCharToMultiByte(CP_UTF8, 0, szPin, -1, pbPin, dwPinLen, nullptr, nullptr))
+		if (!WideCharToMultiByte(CP_UTF8, 0, szPin, -1, pbPin, cbPin, nullptr, nullptr))
 		{
 			dwError = GetLastError();
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by WideCharToMultiByte", GetLastError());
@@ -1577,8 +1768,6 @@ BOOL CStoredCredentialManager::GetResponseFromSignatureChallenge(__in PBYTE pbCh
 		}
 		if (pKeyProvInfo)
 			EIDFree(pKeyProvInfo);
-		if (hCertKey)
-			CryptDestroyKey(hCertKey);
 		if (hHash)
 			CryptDestroyHash(hHash);
 		if (fCallerFreeProv && hProv) 
@@ -1606,7 +1795,6 @@ BOOL CStoredCredentialManager::GenerateSymetricKeyAndEncryptIt(__in HCRYPTPROV h
 {
 	BOOL fReturn = FALSE;
 	BOOL fStatus;
-	HCRYPTHASH hHash = NULL;  // Windows handle type - keep as NULL
 	DWORD dwSize;
 	KEY_BLOB bKey;
 	DWORD dwError = 0;
@@ -1639,7 +1827,7 @@ BOOL CStoredCredentialManager::GenerateSymetricKeyAndEncryptIt(__in HCRYPTPROV h
 		}
 		// save
 		dwBlockLen = 0;
-		fStatus = CryptEncrypt(hKey, hHash,TRUE,0,nullptr,&dwBlockLen, 0);
+		fStatus = CryptEncrypt(hKey, NULL,TRUE,0,nullptr,&dwBlockLen, 0);
 		if(!fStatus)
 		{
 			dwError = GetLastError();
@@ -1655,7 +1843,7 @@ BOOL CStoredCredentialManager::GenerateSymetricKeyAndEncryptIt(__in HCRYPTPROV h
 		}
 		memcpy(*pSymetricKey, bKey.Data, CREDENTIALKEYLENGTH/8);
 		dwSize = CREDENTIALKEYLENGTH/8;
-		fStatus = CryptEncrypt(hKey, hHash,TRUE,0,*pSymetricKey,&dwSize, dwBlockLen);
+		fStatus = CryptEncrypt(hKey, NULL,TRUE,0,*pSymetricKey,&dwSize, dwBlockLen);
 		if(!fStatus)
 		{
 			dwError = GetLastError();
@@ -1688,8 +1876,6 @@ BOOL CStoredCredentialManager::GenerateSymetricKeyAndEncryptIt(__in HCRYPTPROV h
 				*phKey = NULL;
 			}
 		}
-		if (hHash)
-			CryptDestroyHash(hHash);
 		// L3: scrub the raw AES key material from the stack.
 		SecureZeroMemory(&bKey, sizeof(bKey));
 	}
@@ -1849,6 +2035,7 @@ BOOL CStoredCredentialManager::GetPasswordFromChallengeResponse(__in DWORD dwRid
 		return GetPasswordFromDPAPIChallengeResponse(dwRid,ppChallenge,dwChallengeSize,pResponse,dwResponseSize,pszPassword);
 	default:
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Type not implemented");
+		SetLastError(ERROR_INVALID_DATA);
 		return FALSE;
 	}
 }
