@@ -285,7 +285,7 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
                 continue;
             }
 
-            credentials.push_back(info);
+            credentials.push_back(std::move(info));
             LsaFreeMemory(pSecretData);
         }
         else
