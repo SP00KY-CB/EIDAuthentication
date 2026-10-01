@@ -547,6 +547,67 @@ std::wstring LookupSidByUsername(_In_ const std::wstring& wsUsername)
     return wsResult;
 }
 
+// SECURITY: one certificate, one account. CStoredCredentialManager::CreateCredential
+// refuses to bind a certificate already held by another account's stored
+// credential (IsCertificateBoundToOtherRid), because logon maps a card to the
+// FIRST account holding its certificate. Import writes the LSA secret directly
+// and so bypasses that rule; apply the same comparison here - same DER, or a
+// stored hash equal to the SHA-256 of the incoming certificate (or to the hash
+// carried in the import file) - against every OTHER local account's credential.
+// Fails closed: if the existing credentials cannot be enumerated, refuse.
+static HRESULT CheckCertificateNotBoundToOtherRid(_In_ const CredentialInfo& info)
+{
+    BYTE bComputedHash[CERT_HASH_LENGTH] = {};  // NOSONAR - LSASS-01: C-style buffer, matches EID_PRIVATE_DATA::Hash
+    DWORD dwHashSize = sizeof(bComputedHash);
+    BOOL fHaveComputedHash = FALSE;
+    if (!info.Certificate.empty() &&
+        CryptHashCertificate(0, CALG_SHA_256, 0, info.Certificate.data(),
+            static_cast<DWORD>(info.Certificate.size()), bComputedHash, &dwHashSize) &&
+        dwHashSize == CERT_HASH_LENGTH)
+    {
+        fHaveComputedHash = TRUE;
+    }
+
+    // An all-zero hash in the import file means "not provided"; never match on it.
+    BOOL fHaveFileHash = FALSE;
+    for (DWORD i = 0; i < CERT_HASH_LENGTH; i++)
+    {
+        if (info.CertificateHash[i] != 0)
+        {
+            fHaveFileHash = TRUE;
+            break;
+        }
+    }
+
+    std::vector<CredentialInfo> existing;
+    HRESULT hr = EnumerateLsaCredentials(existing);  // NOSONAR (EXPLICIT-TYPE-01) - Explicit type preferred for clarity
+    if (FAILED(hr))
+    {
+        EIDM_TRACE_ERROR(L"[ERROR] Cannot enumerate existing credentials to check certificate binding for RID %u: 0x%08X - refusing import", info.dwRid, hr);
+        return hr;
+    }
+
+    for (const CredentialInfo& other : existing)
+    {
+        if (other.dwRid == info.dwRid)
+        {
+            continue;  // re-importing / replacing this account's own credential
+        }
+        const bool fSameDer = !info.Certificate.empty() && other.Certificate == info.Certificate;
+        const bool fSameComputedHash = fHaveComputedHash &&
+            memcmp(other.CertificateHash, bComputedHash, CERT_HASH_LENGTH) == 0;
+        const bool fSameFileHash = fHaveFileHash &&
+            memcmp(other.CertificateHash, info.CertificateHash, CERT_HASH_LENGTH) == 0;
+        if (fSameDer || fSameComputedHash || fSameFileHash)
+        {
+            EIDM_TRACE_ERROR(L"[ERROR] Certificate for RID %u (%ls) is already bound to another local account (RID %u, %ls) - refusing import: a certificate may be enrolled to only one account",
+                info.dwRid, info.wsUsername.c_str(), other.dwRid, other.wsUsername.c_str());
+            return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
+        }
+    }
+    return S_OK;
+}
+
 HRESULT ImportLsaCredential(
     _In_ const CredentialInfo& info,
     _In_ [[maybe_unused]] DWORD dwFlags,
@@ -570,6 +631,16 @@ HRESULT ImportLsaCredential(
         {
             EIDM_TRACE_ERROR(L"RequireCardBoundCredentials policy set: refusing to import non-crypted credential for RID %u", info.dwRid);
             return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+        }
+    }
+
+    // SECURITY: enforce the one-certificate-per-account rule that the LSA
+    // package applies at enrolment (see CheckCertificateNotBoundToOtherRid).
+    {
+        const HRESULT hrBinding = CheckCertificateNotBoundToOtherRid(info);
+        if (FAILED(hrBinding))
+        {
+            return hrBinding;
         }
     }
 

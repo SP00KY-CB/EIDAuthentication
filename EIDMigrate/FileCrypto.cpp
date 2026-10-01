@@ -125,7 +125,9 @@ std::string GroupToJson(_In_ const GroupInfo& group)
     builder.startObject();
     builder.add("name", WideToUtf8(group.wsName));
     builder.add("comment", WideToUtf8(group.wsComment));
-    builder.add("isBuiltin", group.fBuiltin);
+    // Serialise as a JSON boolean: a BOOL would pick add(int) and become a
+    // Number, which the type-checked asBool() on import reads as false.
+    builder.add("isBuiltin", group.fBuiltin != FALSE);
 
     // Members array
     JsonArray membersArray;
@@ -233,7 +235,7 @@ std::string ExportDataToJson(_In_ const ExportFileData& data)
         JsonObject groupObj;
         groupObj["name"] = std::make_shared<JsonValue>(WideToUtf8(group.wsName));
         groupObj["comment"] = std::make_shared<JsonValue>(WideToUtf8(group.wsComment));
-        groupObj["isBuiltin"] = std::make_shared<JsonValue>(group.fBuiltin);
+        groupObj["isBuiltin"] = std::make_shared<JsonValue>(group.fBuiltin != FALSE);  // JSON boolean, not Number
 
         JsonArray membersArray;
         for (const auto& member : group.wsMembers)
@@ -356,8 +358,16 @@ HRESULT JsonToGroup(_In_ const std::string& json, _Out_ GroupInfo& group)
     if (obj.has("comment"))
         group.wsComment = Utf8ToWide(obj["comment"]->asString());
 
+    // Current files carry a JSON boolean; older (v1) files wrote the BOOL as a
+    // Number, so accept that too (non-zero = true).
     if (obj.has("isBuiltin"))
-        group.fBuiltin = obj["isBuiltin"]->asBool();
+    {
+        const auto& builtinVal = obj["isBuiltin"];
+        if (builtinVal->isBool())
+            group.fBuiltin = builtinVal->asBool() ? TRUE : FALSE;
+        else if (builtinVal->isNumber())
+            group.fBuiltin = (builtinVal->asNumber() != 0) ? TRUE : FALSE;
+    }
 
     // Parse members array
     if (obj.has("members") && obj["members"]->type() == JsonType::Array)

@@ -658,7 +658,7 @@ INT_PTR CALLBACK WndProc_11_ListCredentials(HWND hwndDlg, UINT uMsg, WPARAM wPar
             ExportFileData data;
             data.credentials = selectedCredentials;
             data.formatVersion = "EIDMigrate-v1.0";
-            data.dwVersion = 1;
+            data.dwVersion = EIDMIGRATE_VERSION;  // match the binary header (FileFormat.h), as Export.cpp does
 
             // Get current UTC time for export date (ISO 8601 format)
             data.exportDate = WideToUtf8(FormatCurrentTimestamp());

@@ -12,6 +12,7 @@
 #include <comdef.h>
 #include <lm.h>  // NOSONAR - INCLUDE-01: include order/casing significant for Windows SDK
 #include <sddl.h>
+#include <exception>
 
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -298,9 +299,12 @@ INT_PTR CALLBACK WndProc_Main(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
     {
         return WndProc_Main_Impl(hwndDlg, uMsg, wParam, lParam);
     }
-    catch (...)  // NOSONAR - EXCEPT-01: nothing may propagate out of a window procedure
+    catch (const std::exception&)  // also covers std::bad_alloc
     {
-        // Report "not handled" rather than letting the exception cross user32.
+        // Report "not handled" rather than letting a C++ exception cross user32.
+        // Deliberately NOT catch (...): this project builds with /EHa, where
+        // catch (...) would also swallow SEH exceptions such as access
+        // violations and leave the process running in a corrupted state.
         return FALSE;
     }
 }

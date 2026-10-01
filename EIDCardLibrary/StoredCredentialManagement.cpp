@@ -575,6 +575,22 @@ BOOL CStoredCredentialManager::IsCertificateBoundToOtherRid(__in DWORD dwRid, __
 					break;
 				}
 			}
+			else
+			{
+				// "No stored credential for this account" is the normal case
+				// (STATUS_OBJECT_NAME_NOT_FOUND maps to ERROR_FILE_NOT_FOUND).
+				// Anything else - access denied, a corrupt blob, out of memory -
+				// means this account's binding could not be checked: fail closed
+				// rather than risk binding one certificate to two accounts.
+				const DWORD dwRetrieveError = GetLastError();
+				if (dwRetrieveError != ERROR_FILE_NOT_FOUND)
+				{
+					dwError = (dwRetrieveError != 0) ? dwRetrieveError : ERROR_INTERNAL_ERROR;
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"RetrievePrivateData 0x%08x for rid 0x%x - cannot verify certificate binding, refusing",
+						dwError, pUserInfo[dwI].usri3_user_id);
+					__leave;
+				}
+			}
 		}
 		fReturn = TRUE;
 	}
