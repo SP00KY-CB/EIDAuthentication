@@ -1068,6 +1068,10 @@ BOOL CStoredCredentialManager::GetPassword(__in DWORD dwRid, __in PCCERT_CONTEXT
 	PBYTE pResponse = nullptr;
 	DWORD dwResponseSize = 0;
 	DWORD dwChallengeSize = 0;
+	PBYTE pProofChallenge = nullptr;
+	DWORD dwProofChallengeSize = 0;
+	PBYTE pProofResponse = nullptr;
+	DWORD dwProofResponseSize = 0;
 	DWORD dwError = 0;
 	DWORD type;
 	__try
@@ -1085,6 +1089,49 @@ BOOL CStoredCredentialManager::GetPassword(__in DWORD dwRid, __in PCCERT_CONTEXT
 			dwError = GetLastError();
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetChallenge 0x%08x",dwError);
 			__leave;
+		}
+		// SECURITY (F1): for a crypted credential the card's only job used to be
+		// unwrapping the stored AES key, and whatever bytes came back were imported
+		// as that key. Nothing authenticates the result - the sole failure signal is
+		// the CBC padding check, which random bytes pass about once in 256 tries -
+		// so a programmable card presenting the victim's (public) certificate and
+		// answering the decrypt with garbage logged on as the victim. Before any
+		// password is recovered, make the card prove possession of the private key:
+		// sign a fresh random nonce and verify it against the public key of the
+		// certificate stored with the credential, exactly as the clear-text and
+		// DPAPI types already do. GetResponseFromSignatureChallenge signs with the
+		// key spec from the certificate's CERT_KEY_PROV_INFO, i.e. the same key
+		// that performs the decrypt below.
+		if (type == static_cast<DWORD>(EID_PRIVATE_DATA_TYPE::eidpdtCrypted))  // NOSONAR - ENUM-01: enum-to-underlying cast for Win32/ABI compatibility
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"GetSignatureChallenge (proof of possession)");
+			fStatus = GetSignatureChallenge(&pProofChallenge, &dwProofChallengeSize);
+			if (!fStatus)
+			{
+				dwError = GetLastError();
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetSignatureChallenge 0x%08x",dwError);
+				__leave;
+			}
+			EIDImpersonate();
+			fStatus = GetResponseFromSignatureChallenge(pProofChallenge, dwProofChallengeSize, pContext, szPin, &pProofResponse, &dwProofResponseSize);
+			EIDRevertToSelf();
+			if (!fStatus)
+			{
+				dwError = GetLastError();
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetResponseFromSignatureChallenge 0x%08x",dwError);
+				__leave;
+			}
+			fStatus = VerifySignatureChallengeResponse(dwRid, pProofChallenge, dwProofChallengeSize, pProofResponse, dwProofResponseSize);
+			if (!fStatus)
+			{
+				// VerifySignatureChallengeResponse does not preserve its error code
+				// (its cleanup deletes the temporary key container), so report a
+				// fixed one.
+				dwError = (DWORD) NTE_BAD_SIGNATURE;
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"VerifySignatureChallengeResponse failed - card does not hold the private key");
+				EIDSecurityAudit(SECURITY_AUDIT_FAILURE, L"[CARD_REJECT] Proof-of-possession signature did not verify for rid 0x%x - possible malicious card", dwRid);
+				__leave;
+			}
 		}
 		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"GetResponseFromChallenge");
 		EIDImpersonate();
@@ -1117,6 +1164,16 @@ BOOL CStoredCredentialManager::GetPassword(__in DWORD dwRid, __in PCCERT_CONTEXT
 		{
 			SecureZeroMemory(pResponse, dwResponseSize);
 			EIDFree(pResponse);
+		}
+		if (pProofChallenge)
+		{
+			SecureZeroMemory(pProofChallenge, dwProofChallengeSize);
+			EIDFree(pProofChallenge);
+		}
+		if (pProofResponse)
+		{
+			SecureZeroMemory(pProofResponse, dwProofResponseSize);
+			EIDFree(pProofResponse);
 		}
 	}
 	SetLastError(dwError);
@@ -1416,9 +1473,28 @@ BOOL CStoredCredentialManager::GetResponseFromSignatureChallenge(__in PBYTE pbCh
 		{
 			dwError = GetLastError();
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by CryptAcquireCertificatePrivateKey", GetLastError());
+			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"PIV fallback");
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE, L"Keyspec %S container %s provider %s", (pKeyProvInfo->dwKeySpec == AT_SIGNATURE ?"AT_SIGNATURE":"AT_KEYEXCHANGE"),
 					pKeyProvInfo->pwszContainerName, pKeyProvInfo->pwszProvName);
-			__leave;
+			// Same fallback as GetResponseFromCryptedChallenge, so that a card whose
+			// encrypted credential can be unwrapped there can also answer the
+			// proof-of-possession signature that GetPassword now requires for it.
+			// Whatever key signs here is still checked against the stored
+			// certificate's public key by the verifier.
+			if (!IsAllowedCSPProvider(pKeyProvInfo->pwszProvName))
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR, L"CSP provider '%s' not allowed", pKeyProvInfo->pwszProvName);
+				dwError = ERROR_ACCESS_DENIED;
+				__leave;
+			}
+			if (!CryptAcquireContext(&hProv, nullptr, pKeyProvInfo->pwszProvName, pKeyProvInfo->dwProvType, CRYPT_SILENT))
+			{
+				dwError = GetLastError();
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%x returned by CryptAcquireContext", GetLastError());
+				__leave;
+			}
+			fCallerFreeProv = TRUE;
+			dwError = 0;
 		}
 		dwPinLen = (DWORD) wcslen(szPin) + 1;
 		pbPin = (LPSTR) EIDAlloc(dwPinLen);
@@ -1895,7 +1971,26 @@ BOOL CStoredCredentialManager::GetPasswordFromCryptedChallengeResponse(__in DWOR
 				__leave;
 			}
 		}
-		(*pszPassword)[((dwRoundNumber-1) * dwBlockLen + dwSize)/sizeof(WCHAR)] = '\0';
+		// Defence in depth (F1): the plaintext is a WCHAR password without its
+		// terminator. A wrong key that happens to pass the padding check yields a
+		// length unrelated to that, so refuse anything empty, odd-sized, longer
+		// than the stored ciphertext, or whose first WCHAR is already NUL.
+		// Terminate first (in bounds: cbPlaintext <= cbPasswordBuffer) so the
+		// cleanup wcslen() is bounded on every path below.
+		const DWORD cbPlaintext = (dwRoundNumber-1) * dwBlockLen + dwSize;
+		(*pszPassword)[cbPlaintext/sizeof(WCHAR)] = '\0';
+		if (cbPlaintext == 0 || (cbPlaintext % sizeof(WCHAR)) != 0 || cbPlaintext > pEidPrivateData->usPasswordLen)
+		{
+			dwError = ERROR_INVALID_DATA;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"decrypted password length %u invalid (usPasswordLen=%u)",cbPlaintext,pEidPrivateData->usPasswordLen);
+			__leave;
+		}
+		if ((*pszPassword)[0] == L'\0')
+		{
+			dwError = ERROR_INVALID_DATA;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"decrypted password is empty");
+			__leave;
+		}
 		fReturn = TRUE;
 	}
 	__finally
