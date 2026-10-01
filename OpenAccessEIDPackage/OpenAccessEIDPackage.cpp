@@ -1015,6 +1015,13 @@ extern "C"
 			{
 				*MachineName = LsaInitializeUnicodeStringFromWideString(ComputerName);
 				*AuthenticatingAuthority = LsaInitializeUnicodeStringFromWideString(ComputerName);
+				// Both are dereferenced later (CompletePrimaryCredential), so an
+				// allocation failure here has to stop the logon, not crash LSASS.
+				if (!*MachineName || !*AuthenticatingAuthority)
+				{
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No memory for MachineName/AuthenticatingAuthority");
+					return STATUS_INSUFFICIENT_RESOURCES;
+				}
 			}
 			else
 			{
@@ -1155,6 +1162,15 @@ extern "C"
 				return STATUS_LOGON_FAILURE;
 			}
 			*AccountName = LsaInitializeUnicodeStringFromWideString(szUserName);
+			if (!*AccountName)
+			{
+				// Dereferenced by UserNameToToken, the audit lines and
+				// CompletePrimaryCredential below.
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No memory for AccountName");
+				EIDFree(szUserName);
+				CertFreeCertificateContext(pCertContext);
+				return STATUS_INSUFFICIENT_RESOURCES;
+			}
 			// trusted ?
 			// check done after username to do accounting in case of failure
 			// AccountName is known !

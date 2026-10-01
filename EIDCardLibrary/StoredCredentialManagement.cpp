@@ -1094,7 +1094,10 @@ NTSTATUS CompletePrimaryCredential(__in PLSA_UNICODE_STRING AuthenticatingAuthor
 	PrimaryCredentials->DownlevelName.Length = AccountName->Length;
 	PrimaryCredentials->DownlevelName.MaximumLength = AccountName->MaximumLength;
 	PrimaryCredentials->DownlevelName.Buffer = (PWSTR) EIDAlloc(AccountName->MaximumLength);
-	memcpy(PrimaryCredentials->DownlevelName.Buffer, AccountName->Buffer, AccountName->MaximumLength);
+	if (PrimaryCredentials->DownlevelName.Buffer)
+	{
+		memcpy(PrimaryCredentials->DownlevelName.Buffer, AccountName->Buffer, AccountName->MaximumLength);
+	}
 
 	PrimaryCredentials->DomainName.Length = AuthenticatingAuthority->Length;
 	PrimaryCredentials->DomainName.MaximumLength = AuthenticatingAuthority->MaximumLength;

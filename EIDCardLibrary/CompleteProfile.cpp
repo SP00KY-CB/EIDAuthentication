@@ -63,6 +63,14 @@ NTSTATUS UserNameToProfile(__in PLSA_UNICODE_STRING AccountName,  // NOSONAR - A
 	PBYTE Offset;
 	DWORD dwSize;
 
+	// UserName is UNLEN+1 WCHARs; a longer name would make wcsncpy_s abort LSASS
+	// and the terminator write below land past the end of the buffer.
+	if (!AccountName || !AccountName->Buffer || AccountName->Length / sizeof(WCHAR) > UNLEN)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Account name missing or longer than UNLEN");
+		if (ProfileBufferLength) *ProfileBufferLength=0;
+		return STATUS_INVALID_PARAMETER;
+	}
 	wcsncpy_s(UserName,ARRAYSIZE(UserName),AccountName->Buffer,AccountName->Length/2);
 	UserName[AccountName->Length/2]=0;
 	dwSize = ARRAYSIZE(DomainName);

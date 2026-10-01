@@ -349,12 +349,17 @@ HRESULT EIDUnlockLogonPack(
 
     const EID_INTERACTIVE_LOGON* pkilIn = &rkiulIn.Logon;
 
-    // alloc space for struct plus extra for the three strings
-    DWORD cb = sizeof(rkiulIn) +
+    // alloc space for struct plus extra for the three strings.
+    // The string lengths are USHORTs, so only dwCspInfoLen can wrap the sum.
+    const DWORD cbFixed = sizeof(rkiulIn) +
 		pkilIn->LogonDomainName.Length +
         pkilIn->UserName.Length +
-        pkilIn->Pin.Length +
-		pCspInfo->dwCspInfoLen;
+        pkilIn->Pin.Length;
+    if (pCspInfo->dwCspInfoLen > MAXDWORD - cbFixed)
+    {
+        return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+    }
+    DWORD cb = cbFixed + pCspInfo->dwCspInfoLen;
 
 
     EID_INTERACTIVE_UNLOCK_LOGON* pkiulOut = (EID_INTERACTIVE_UNLOCK_LOGON*)CoTaskMemAlloc(cb);  // NOSONAR (EXPLICIT-TYPE-04) - Explicit type preferred for code clarity

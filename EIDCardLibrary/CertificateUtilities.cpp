@@ -1388,13 +1388,22 @@ BOOL ImportFileToSmartCard(PTSTR szFileName, PTSTR szPassword, PTSTR szReaderNam
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CreateFile 0x%08x",dwError);
 			__leave;
 		}
-		DataBlob.cbData = GetFileSize(hFile,nullptr);
-		if (!DataBlob.cbData)
+		LARGE_INTEGER liFileSize = {0};
+		if (!GetFileSizeEx(hFile, &liFileSize) || liFileSize.QuadPart == 0)
 		{
 			dwError = GetLastError();
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetFileSize 0x%08x",dwError);
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetFileSizeEx 0x%08x",dwError);
 			__leave;
 		}
+		// A PFX holding one key and its chain is a few KB. Refuse anything
+		// implausibly large rather than allocating whatever the file claims.
+		if (liFileSize.QuadPart > 1024 * 1024)
+		{
+			dwError = ERROR_FILE_TOO_LARGE;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"PFX file too large (%lld bytes)",liFileSize.QuadPart);
+			__leave;
+		}
+		DataBlob.cbData = static_cast<DWORD>(liFileSize.QuadPart);
 		DataBlob.pbData = (PBYTE) EIDAlloc(DataBlob.cbData);
 		if (!DataBlob.pbData)
 		{

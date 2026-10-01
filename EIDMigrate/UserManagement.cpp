@@ -33,7 +33,7 @@ HRESULT UserExists(_In_ const std::wstring& wsUsername, _Out_ BOOL& pfExists)
     return HRESULT_FROM_WIN32(status);
 }
 
-HRESULT GetUserInfo(_In_ const std::wstring& wsUsername, _Out_ UserInfo& info)
+HRESULT GetUserInfo(_In_ const std::wstring& wsUsername, _Out_ LocalUserInfo& info)
 {
     USER_INFO_1* pInfo = nullptr;
     DWORD dwError = 0; // NOSONAR - variable used
@@ -196,7 +196,7 @@ HRESULT SetUserPasswordNeverExpires(_In_ const std::wstring& wsUsername, _In_ BO
     return HRESULT_FROM_WIN32(status);
 }
 
-HRESULT EnumerateLocalUsers(_Out_ std::vector<UserInfo>& users)
+HRESULT EnumerateLocalUsers(_Out_ std::vector<LocalUserInfo>& users)
 {
     LPUSER_INFO_0 pBuf = nullptr;
     DWORD dwEntriesRead = 0;
@@ -215,7 +215,7 @@ HRESULT EnumerateLocalUsers(_Out_ std::vector<UserInfo>& users)
 
     for (DWORD i = 0; i < dwEntriesRead; i++)
     {
-        UserInfo info;
+        LocalUserInfo info;
         if (SUCCEEDED(GetUserInfo(pBuf[i].usri0_name, info)))
         {
             users.push_back(info);
@@ -226,7 +226,7 @@ HRESULT EnumerateLocalUsers(_Out_ std::vector<UserInfo>& users)
     return S_OK;
 }
 
-void DisplayUserInfo(_In_ const UserInfo& info)
+void DisplayUserInfo(_In_ const LocalUserInfo& info)
 {
     EIDM_TRACE_INFO(L"  User: %ls", info.wsUsername.c_str());
     EIDM_TRACE_INFO(L"    RID: %u", info.dwRid);
