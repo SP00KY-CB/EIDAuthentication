@@ -79,6 +79,12 @@ BOOL PopulateListViewCheckData(HWND hWndListViewList, HWND hWndListViewCheck)
 	LVGROUP grp;
 	
 	CContainerHolderTest* pContainerHolder = pCredentialList->GetContainerHolderAt(dwCurrentCredential);
+	// dwCurrentCredential is 0xFFFFFFFF when nothing is selected, and the list
+	// can shrink when a card is removed.
+	if (!pContainerHolder)
+	{
+		return FALSE;
+	}
 
 	//GRP
 	for (int index = pContainerHolder->GetCheckCount() -1; index >= 0; index--)
@@ -119,6 +125,11 @@ BOOL PopulateListViewCheckData(HWND hWndListViewList, HWND hWndListViewCheck)
 		lvI.puColumns = ColumnsToDisplay;
 		lvI.iGroupId = index;
 		ListView_InsertItem(hWndListViewCheck, &lvI);
+		// The list view keeps its own copy of the text.
+		if (lvI.pszText)
+		{
+			EIDFree(lvI.pszText);
+		}
 	}
 
 
@@ -138,12 +149,19 @@ BOOL PopulateListViewListData(HWND hWndListView)
 	// Initialize LVITEM members that are different for each item. 
 	for (DWORD index = 0; index < pCredentialList->ContainerHolderCount(); index++)
 	{
+		// Each accessor call takes the lock separately, so the list can shrink
+		// between the count and the lookup.
+		CContainerHolderTest* pHolder = pCredentialList->GetContainerHolderAt(index);  // NOSONAR - API-01: pointer type dictated by non-const accessor API
+		if (!pHolder || !pHolder->GetContainer())
+		{
+			continue;
+		}
 		lvI.stateMask = LVIS_OVERLAYMASK;
-		lvI.state = INDEXTOOVERLAYMASK(pCredentialList->GetContainerHolderAt(index)->GetIconIndex() +1);
+		lvI.state = INDEXTOOVERLAYMASK(pHolder->GetIconIndex() +1);
 		lvI.iItem = index;
 		lvI.iImage = 0;
 		lvI.iSubItem = 0;
-		lvI.pszText = pCredentialList->GetContainerHolderAt(index)->GetContainer()->GetUserName();
+		lvI.pszText = pHolder->GetContainer()->GetUserName();
 		lvI.cColumns = ARRAYSIZE(ColumnsToDisplay);
 		lvI.puColumns = ColumnsToDisplay;
 		ListView_InsertItem(hWndListView, &lvI);
