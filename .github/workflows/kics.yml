@@ -41,6 +41,11 @@ jobs:
           output_path: kics-results
           output_formats: json,sarif
           fail_on: high
+          # Secret detection is secret-scan.yml's job (five dedicated
+          # scanners). KICS's generic-token query only adds false positives
+          # here, e.g. `const token = (await tr.json()).access_token` in
+          # pr-report.yml, a runtime OAuth token rather than a literal.
+          disable_secrets: true
           enable_jobs_summary: true
           # The action's PR comments need pull-requests: write; the job
           # summary and code scanning alerts carry the same results.
