@@ -9,6 +9,9 @@
 [![Kingfisher](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/secret-kingfisher.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/secret-kingfisher.yml)
 [![2MS](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/secret-2ms.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/secret-2ms.yml)
 [![detect-secrets](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/secret-detect-secrets.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/secret-detect-secrets.yml)
+[![GitGuardian](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/secret-gitguardian.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/secret-gitguardian.yml)
+[![Xygeni](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/xygeni.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/xygeni.yml)
+[![Kusari Inspector](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/kusari.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/kusari.yml)
 [![MegaLinter](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/megalinter.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/megalinter.yml)
 [![KICS](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/kics.yml/badge.svg)](https://github.com/SP00KY-CB/OpenAccessEID/actions/workflows/kics.yml)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=DangerDawgAU_EIDAuthentication&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=DangerDawgAU_EIDAuthentication)
@@ -16,6 +19,8 @@
 [![Aikido Security](https://img.shields.io/badge/Aikido-security-1f6feb)](https://app.aikido.dev/repositories/2594845)
 [![Aikido Code Quality](https://img.shields.io/badge/Aikido-code%20quality-1f6feb)](https://app.aikido.dev/repositories/2594845)
 [![Snyk Security](https://snyk.io/test/github/SP00KY-CB/OpenAccessEID/badge.svg)](https://app.snyk.io/org/sp00ky-cb/project/936e041e-19b8-47c5-a278-2a090b81a88c)
+[![Arnica](https://img.shields.io/badge/Arnica-monitored-1f6feb)](https://www.arnica.io/)
+[![Corgea](https://img.shields.io/badge/Corgea-PR%20scanning-1f6feb)](https://corgea.com/)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/SP00KY-CB/OpenAccessEID/badge)](https://scorecard.dev/viewer/?uri=github.com/SP00KY-CB/OpenAccessEID)
 [![License: LGPL-2.1](https://img.shields.io/github/license/SP00KY-CB/OpenAccessEID)](LICENSE)
 
