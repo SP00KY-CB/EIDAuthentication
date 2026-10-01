@@ -137,9 +137,28 @@ HRESULT EID_CSV_JsonToConfig(const std::string& json, EID_CSV_CONFIG& config)
     // Initialize with defaults
     config = EID_CSV_CONFIG();
 
+    // Typed member lookup: logging.json is untrusted input, and asBool() /
+    // asNumber() / asString() on a value of another JSON type read a member
+    // that type never set. A member of the wrong type is ignored (the default
+    // is kept), exactly as if it were absent.
+    auto member = [&root](const char* key, JsonType expected) -> const JsonValue*
+    {
+        if (!root.has(key))
+            return nullptr;
+        const std::shared_ptr<JsonValue>& pValue = root[key];
+        if (!pValue || pValue->type() != expected)
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,
+                L"[CONFIG_REJECT] logging.json member '%S' has the wrong type; ignored", key);
+            return nullptr;
+        }
+        return pValue.get();
+    };
+    const JsonValue* pMember = nullptr;
+
     // Read enabled flag
-    if (root.has("enabled"))
-        config.fEnabled = root["enabled"]->asBool() ? TRUE : FALSE;
+    if ((pMember = member("enabled", JsonType::Boolean)) != nullptr)
+        config.fEnabled = pMember->asBool() ? TRUE : FALSE;
 
     // Read log path.
     //
@@ -149,9 +168,9 @@ HRESULT EID_CSV_JsonToConfig(const std::string& json, EID_CSV_CONFIG& config)
     // hands its directory to EnsureLogDirSecured, which calls
     // SetNamedSecurityInfoW with a PROTECTED DACL **as SYSTEM**, follows
     // junctions, and severs inheritance. A length check is not enough.
-    if (root.has("logPath"))
+    if ((pMember = member("logPath", JsonType::String)) != nullptr)
     {
-        std::string utf8Path = root["logPath"]->asString();
+        std::string utf8Path = pMember->asString();
         std::wstring wpath = Utf8ToWide(utf8Path);
         if (!EID_CSV_IsAcceptableLogPath(wpath))
         {
@@ -172,36 +191,36 @@ HRESULT EID_CSV_JsonToConfig(const std::string& json, EID_CSV_CONFIG& config)
     // {"fileCount": -1} drive ~4.29 billion GetFileAttributesW calls inside
     // CSVLogger::RotateLogFile while holding s_csLogger, in LSASS, on the logon
     // path. Same bounds as the other three loaders.
-    if (root.has("maxFileSizeMB"))
+    if ((pMember = member("maxFileSizeMB", JsonType::Number)) != nullptr)
     {
-        const long long llValue = root["maxFileSizeMB"]->asNumber();
+        const long long llValue = pMember->asNumber();
         config.dwMaxFileSizeMB = (llValue < 1) ? 1 : (llValue > 100 ? 100 : static_cast<DWORD>(llValue));
     }
 
     // Read file count
-    if (root.has("fileCount"))
+    if ((pMember = member("fileCount", JsonType::Number)) != nullptr)
     {
-        const long long llValue = root["fileCount"]->asNumber();
+        const long long llValue = pMember->asNumber();
         config.dwFileCount = (llValue < 1) ? 1 : (llValue > 100 ? 100 : static_cast<DWORD>(llValue));
     }
 
     // Read columns bitmask
-    if (root.has("columns"))
-        config.dwColumns = static_cast<EID_CSV_COLUMN>(static_cast<DWORD>(root["columns"]->asNumber()));
+    if ((pMember = member("columns", JsonType::Number)) != nullptr)
+        config.dwColumns = static_cast<EID_CSV_COLUMN>(static_cast<DWORD>(pMember->asNumber()));
 
     // Read category filter bitmask
-    if (root.has("categoryFilter"))
-        config.dwCategoryFilter = static_cast<DWORD>(root["categoryFilter"]->asNumber());
+    if ((pMember = member("categoryFilter", JsonType::Number)) != nullptr)
+        config.dwCategoryFilter = static_cast<DWORD>(pMember->asNumber());
 
     // Read verbose events flag
-    if (root.has("verboseEvents"))
-        config.fVerboseEvents = root["verboseEvents"]->asBool() ? TRUE : FALSE;
+    if ((pMember = member("verboseEvents", JsonType::Boolean)) != nullptr)
+        config.fVerboseEvents = pMember->asBool() ? TRUE : FALSE;
 
     // Read diagnostics flags
-    if (root.has("diagnosticsEnabled"))
-        config.fDiagnosticsEnabled = root["diagnosticsEnabled"]->asBool() ? TRUE : FALSE;
-    if (root.has("diagnosticsLevel"))
-        config.dwDiagnosticsLevel = static_cast<DWORD>(root["diagnosticsLevel"]->asNumber());
+    if ((pMember = member("diagnosticsEnabled", JsonType::Boolean)) != nullptr)
+        config.fDiagnosticsEnabled = pMember->asBool() ? TRUE : FALSE;
+    if ((pMember = member("diagnosticsLevel", JsonType::Number)) != nullptr)
+        config.dwDiagnosticsLevel = static_cast<DWORD>(pMember->asNumber());
 
     return S_OK;
 }

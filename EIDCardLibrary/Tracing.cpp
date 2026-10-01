@@ -43,13 +43,20 @@
 #pragma comment(lib,"Dbghelp")
 
 REGHANDLE hPub;  // NOSONAR - RUNTIME-01: ETW registration handle, set by EventRegister()
-BOOL bFirst = TRUE;  // NOSONAR - RUNTIME-01: One-time initialization flag
 WCHAR Section[100];  // NOSONAR - RUNTIME-01: Trace section buffer, filled at runtime
 
 // SECURITY FIX #37: Add synchronization for trace globals (CWE-362)
 // ETW EnableCallback can be called from any thread; protect shared state
 static CRITICAL_SECTION g_csTrace;  // NOSONAR - RUNTIME-01: Critical section, must be mutable
 static BOOL g_csTraceInitialized = FALSE;  // NOSONAR - RUNTIME-01: Initialization flag
+
+// One-time registration of the ETW provider. This used to be a plain BOOL
+// (bFirst) read without a lock by every trace call, so two threads tracing
+// for the first time could both run InitializeCriticalSection on the same
+// CRITICAL_SECTION and EventRegister twice (leaking a REGHANDLE). INIT_ONCE
+// runs the registration exactly once and makes concurrent first callers wait
+// for it (LSASS-safe, no DllMain involvement).
+static INIT_ONCE g_TraceInitOnce = INIT_ONCE_STATIC_INIT;  // NOSONAR - RUNTIME-01: tracing initialization guard, set at runtime
 
 // to enable tracing in kernel debugger, issue the following command in windbg : ed nt!Kd_DEFAULT_MASK  0xFFFFFFFF
 // OR
@@ -108,26 +115,39 @@ void NTAPI EnableCallback(
 	}
 }
 
-void EIDCardLibraryTracingRegister() {
+static BOOL CALLBACK EIDTraceInitOnceCallback(PINIT_ONCE, PVOID, PVOID*)
+{
 	// SECURITY FIX #37: Initialize critical section for trace globals (CWE-362)
-	if (!g_csTraceInitialized)
-	{
-		InitializeCriticalSection(&g_csTrace);
-		g_csTraceInitialized = TRUE;
-	}
-	EnterCriticalSection(&g_csTrace);
-	bFirst = FALSE;
-	LeaveCriticalSection(&g_csTrace);
+	InitializeCriticalSection(&g_csTrace);
+	g_csTraceInitialized = TRUE;
 	EventRegister(&CLSID_CEIDProvider,EnableCallback,nullptr,&hPub);
+	return TRUE;
+}
+
+static void EIDEnsureTracingRegistered()
+{
+	InitOnceExecuteOnce(&g_TraceInitOnce, EIDTraceInitOnceCallback, nullptr, nullptr);
+}
+
+void EIDCardLibraryTracingRegister() {
+	EIDEnsureTracingRegistered();
 }
 
 void EIDCardLibraryTracingUnRegister() {
+	// Only undo a registration that actually completed. The INIT_ONCE is not
+	// reset: this runs at unload, and tracing after it is a no-op (hPub == 0).
+	BOOL fPending = FALSE;
+	if (!InitOnceBeginInitialize(&g_TraceInitOnce, INIT_ONCE_CHECK_ONLY, &fPending, nullptr) || fPending)
+	{
+		return;
+	}
 	EventUnregister(hPub);
+	hPub = 0;
 	// SECURITY FIX #37: Clean up critical section
 	if (g_csTraceInitialized)
 	{
-		DeleteCriticalSection(&g_csTrace);
 		g_csTraceInitialized = FALSE;
+		DeleteCriticalSection(&g_csTrace);
 	}
 }
 
@@ -144,7 +164,7 @@ static BOOL EIDFormatTruncatedV(PWSTR pBuffer, size_t cchBuffer, PCWSTR szFormat
 	return (ret >= 0 || pBuffer[0] != L'\0') ? TRUE : FALSE;
 }
 
-void EIDCardLibraryTraceEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dwLevel, PCWSTR szFormat,...) {  // NOSONAR - VARIADIC-01: ETW tracing requires variadic format function
+void EIDCardLibraryTraceEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dwLevel, _Printf_format_string_ PCWSTR szFormat,...) {  // NOSONAR - VARIADIC-01: ETW tracing requires variadic format function
 	_ASSERTE( _CrtCheckMemory( ) );
 #ifndef _DEBUG
 	UNREFERENCED_PARAMETER(dwLine);
@@ -154,10 +174,7 @@ void EIDCardLibraryTraceEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR
 	WCHAR Buffer2[356];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 	va_list ap;
 
-	if (bFirst) 
-	{
-		EIDCardLibraryTracingRegister();
-	}
+	EIDEnsureTracingRegistered();
 
 	// _TRUNCATE, not a count equal to the buffer size: with an explicit count the
 	// CRT treats output that does not fit as an invalid parameter and fast-fails,
@@ -194,18 +211,49 @@ void EIDCardLibraryTraceEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR
 			// may contain sensitive information - generate a dump only if the debugging is active
 			if (IsTracingEnabled)
 			{
-				HANDLE fileHandle = CreateFile (L"c:\\EIDAuthenticateDump.dmp", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
-				if (fileHandle == INVALID_HANDLE_VALUE)
+				// The dump of LSASS can hold PIN/password residue, so it is never
+				// written to a world-readable location (it used to go to
+				// c:\EIDAuthenticateDump.dmp, then %TEMP%, with default security).
+				// It goes only into the product directory, and only when that
+				// directory is a real, SYSTEM/Administrators-owned directory with
+				// the protected DACL; the file itself gets a protected DACL for
+				// SYSTEM and Administrators only, a unique name, CREATE_NEW and
+				// FILE_FLAG_OPEN_REPARSE_POINT so nothing pre-planted is followed
+				// or overwritten.
+				HANDLE fileHandle = INVALID_HANDLE_VALUE;  // NOSONAR - EXPLICIT-TYPE-02: HANDLE visible for security audit
+				wchar_t szFileName[MAX_PATH];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
+				SYSTEMTIME stNow;
+				SECURITY_ATTRIBUTES saDump;
+				PSECURITY_DESCRIPTOR pDumpSD = nullptr;
+				GetSystemTime(&stNow);
+				if (!EnsureLogDirSecured(EID_CSV_CONFIG_DIR))
 				{
-					if (GetLastError() == 0x5)  // NOSONAR - COMPLEXITY-01: nested guard retained; logic verified
+					EIDCardLibraryTraceEx(__FILE__,__LINE__,__FUNCTION__,WINEVENT_LEVEL_WARNING,L"Dump directory is missing or not trusted - no minidump written");  // NOSONAR - LOG-01: __FILE__ retained for logging macro
+				}
+				else if (_snwprintf_s(szFileName, ARRAYSIZE(szFileName), _TRUNCATE,
+						L"%s\\EIDAuthenticateDump-%04u%02u%02u-%02u%02u%02u%03u-%lu-%lu.dmp", EID_CSV_CONFIG_DIR,
+						stNow.wYear, stNow.wMonth, stNow.wDay, stNow.wHour, stNow.wMinute, stNow.wSecond, stNow.wMilliseconds,
+						GetCurrentProcessId(), GetCurrentThreadId()) < 0)
+				{
+					EIDCardLibraryTraceEx(__FILE__,__LINE__,__FUNCTION__,WINEVENT_LEVEL_WARNING,L"Dump file name too long - no minidump written");  // NOSONAR - LOG-01: __FILE__ retained for logging macro
+				}
+				else if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;FA;;;SY)(A;;FA;;;BA)", SDDL_REVISION_1, &pDumpSD, nullptr))
+				{
+					EIDCardLibraryTraceEx(__FILE__,__LINE__,__FUNCTION__,WINEVENT_LEVEL_WARNING,L"Unable to build the dump file security descriptor 0x%08X - no minidump written", GetLastError());  // NOSONAR - LOG-01: __FILE__ retained for logging macro
+				}
+				else
+				{
+					saDump.nLength = sizeof(saDump);
+					saDump.lpSecurityDescriptor = pDumpSD;
+					saDump.bInheritHandle = FALSE;
+					fileHandle = CreateFileW(szFileName, GENERIC_WRITE, 0, &saDump, CREATE_NEW,
+						FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+					if (fileHandle != INVALID_HANDLE_VALUE)
 					{
-						EIDCardLibraryTraceEx(__FILE__,__LINE__,__FUNCTION__,WINEVENT_LEVEL_WARNING,L"Unable to create minidump file c:\\EIDAuthenticate.dmp");  // NOSONAR - LOG-01: __FILE__ retained for logging macro
-						wchar_t szFileName[MAX_PATH];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
-						GetTempPathW(MAX_PATH, szFileName);
-						wcscat_s(szFileName, MAX_PATH, L"EIDAuthenticateDump.dmp");
-						EIDCardLibraryTraceEx(__FILE__,__LINE__,__FUNCTION__,WINEVENT_LEVEL_WARNING,L"Trying to create dump file %s",szFileName);  // NOSONAR - LOG-01: __FILE__ retained for logging macro
-						fileHandle = CreateFile (szFileName, GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+						EIDCardLibraryTraceEx(__FILE__,__LINE__,__FUNCTION__,WINEVENT_LEVEL_WARNING,L"Writing minidump file %s",szFileName);  // NOSONAR - LOG-01: __FILE__ retained for logging macro
 					}
+					LocalFree(pDumpSD);
+					pDumpSD = nullptr;
 				}
 				if (fileHandle == INVALID_HANDLE_VALUE)
 				{
@@ -447,7 +495,7 @@ BOOL StopLogging()
 
 // Security audit logging - provides visibility into security-relevant events
 // Logs to ETW with security-specific formatting for SIEM/security monitoring tools
-void EIDSecurityAuditEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dwAuditType, PCWSTR szFormat,...)  // NOSONAR - VARIADIC-01: ETW audit logging requires variadic format function
+void EIDSecurityAuditEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dwAuditType, _Printf_format_string_ PCWSTR szFormat,...)  // NOSONAR - VARIADIC-01: ETW audit logging requires variadic format function
 {
 	UNREFERENCED_PARAMETER(szFile);
 	WCHAR Buffer[512];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
@@ -455,10 +503,7 @@ void EIDSecurityAuditEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dw
 	va_list ap;
 	LPCWSTR pwszAuditPrefix;
 
-	if (bFirst)
-	{
-		EIDCardLibraryTracingRegister();
-	}
+	EIDEnsureTracingRegistered();
 
 	// Determine audit type prefix for easy filtering
 	switch (dwAuditType)
@@ -518,7 +563,7 @@ void EIDLogErrorWithContextEx(  // NOSONAR - VARIADIC-01: Error logging requires
 	PCSTR szFunction,
 	const char* operation,
 	HRESULT hr,
-	PCWSTR szAdditionalContext,
+	_In_opt_z_ _Printf_format_string_ PCWSTR szAdditionalContext,
 	...)
 {
 	UNREFERENCED_PARAMETER(szFile);
@@ -526,10 +571,7 @@ void EIDLogErrorWithContextEx(  // NOSONAR - VARIADIC-01: Error logging requires
 	WCHAR ContextBuffer[256] = {0};  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 	WCHAR FinalBuffer[512] = {0};  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 
-	if (bFirst)
-	{
-		EIDCardLibraryTracingRegister();
-	}
+	EIDEnsureTracingRegistered();
 
 	// Format additional context if provided
 	if (szAdditionalContext != nullptr)
@@ -581,10 +623,7 @@ void EIDLogStackTraceEx(
 	constexpr USHORT MAX_STACK_FRAMES = 16;
 	PVOID stack[MAX_STACK_FRAMES];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 
-	if (bFirst)
-	{
-		EIDCardLibraryTracingRegister();
-	}
+	EIDEnsureTracingRegistered();
 
 	// Log error context at ERROR level
 	WCHAR ErrorBuffer[256];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
