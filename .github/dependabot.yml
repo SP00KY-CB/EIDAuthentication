@@ -2,7 +2,7 @@
 # mostly its workflows (build, release, scanning), so action updates are the
 # main dependency stream worth automating; C++ dependencies are vendored and
 # hash-pinned in Installer/Stage-Minidrivers.ps1 instead. The pip entry keeps
-# the hash-pinned detect-secrets install used by secret-scan.yml current.
+# the hash-pinned detect-secrets install used by secret-detect-secrets.yml current.
 version: 2
 updates:
   - package-ecosystem: github-actions
