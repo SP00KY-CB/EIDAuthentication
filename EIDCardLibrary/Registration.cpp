@@ -341,8 +341,48 @@ void EIDCredentialProviderDllUnRegister()
 		L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Provider Filters\\{B4866A0A-DB08-4835-A26F-414B46F3244C}");
 }
 
+// The installer puts EIDConfigurationWizard.exe in $INSTDIR (not System32) and records $INSTDIR
+// as HKLM\SOFTWARE\OpenAccessEID\InstallPath before it runs DllRegister. Returns the full path
+// of the wizard; *pfExpand is TRUE when it falls back to the default folder written with an
+// environment variable (so the value must be stored as REG_EXPAND_SZ).
+static std::wstring GetConfigurationWizardPath(__out BOOL* pfExpand)
+{
+	WCHAR szInstallPath[MAX_PATH] = L"";  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
+	DWORD cbInstallPath = sizeof(szInstallPath);
+	LONG lStatus = RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\OpenAccessEID", L"InstallPath",
+		RRF_RT_REG_SZ, nullptr, szInstallPath, &cbInstallPath);
+	std::wstring path;
+	if (lStatus == ERROR_SUCCESS)
+	{
+		path = szInstallPath;
+	}
+	// The value is quoted in the command line below, so it must not contain a quote itself.
+	if (path.empty() || path.find(L'"') != std::wstring::npos)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"InstallPath unusable (0x%08x); using the default folder", lStatus);
+		*pfExpand = TRUE;
+		path = L"%ProgramFiles%\\OpenAccess EID";
+	}
+	else
+	{
+		*pfExpand = FALSE;
+	}
+	if (path.back() != L'\\')
+	{
+		path += L'\\';
+	}
+	path += L"EIDConfigurationWizard.exe";
+	return path;
+}
+
 void EIDConfigurationWizardDllRegister()
 {
+	BOOL fExpand = FALSE;
+	const std::wstring wizardPath = GetConfigurationWizardPath(&fExpand);
+	const DWORD dwPathType = fExpand ? REG_EXPAND_SZ : REG_SZ;
+	// Quoted: the install folder normally contains spaces ("Program Files").
+	const std::wstring wizardCommand = L"\"" + wizardPath + L"\"";
+	const std::wstring wizardTasks = wizardPath + L",-68";
 	RegSetKeyValue(	HKEY_LOCAL_MACHINE, 
 		L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ControlPanel\\NameSpace\\{F5D846B4-14B0-11DE-B23C-27A355D89593}",
 		nullptr,REG_SZ, L"EIDConfigurationWizard",sizeof(L"EIDConfigurationWizard"));
@@ -367,11 +407,12 @@ void EIDConfigurationWizardDllRegister()
 			sizeof(L"%SystemRoot%\\system32\\imageres.dll,-58"));
 	RegSetKeyValue(	HKEY_CLASSES_ROOT, 
 		L"CLSID\\{F5D846B4-14B0-11DE-B23C-27A355D89593}\\Shell\\Open\\Command",
-		nullptr,REG_EXPAND_SZ, L"%SystemRoot%\\system32\\EIDConfigurationWizard.exe",
-			sizeof(L"%SystemRoot%\\system32\\EIDConfigurationWizard.exe"));
+		nullptr,dwPathType, wizardCommand.c_str(),
+			(DWORD)((wizardCommand.size() + 1) * sizeof(WCHAR)));
 	RegSetKeyValue(	HKEY_CLASSES_ROOT, 
 		L"CLSID\\{F5D846B4-14B0-11DE-B23C-27A355D89593}",
-		L"System.Software.TasksFileUrl",REG_SZ, L"%SystemRoot%\\system32\\EIDConfigurationWizard.exe,-68",sizeof(L"%SystemRoot%\\system32\\EIDConfigurationWizard.exe,-68"));
+		L"System.Software.TasksFileUrl",dwPathType, wizardTasks.c_str(),
+			(DWORD)((wizardTasks.size() + 1) * sizeof(WCHAR)));
 	
 
 }

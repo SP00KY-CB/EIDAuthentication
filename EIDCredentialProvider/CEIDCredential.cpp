@@ -29,6 +29,7 @@
 #include "../EIDCardLibrary/EIDCardLibrary.h"
 #include "../EIDCardLibrary/Package.h"
 
+#include <wincred.h>
 #include <CodeAnalysis/Warnings.h>
 #pragma warning(push)
 #pragma warning(disable : 4995)
@@ -192,11 +193,47 @@ ICredentialProviderCredentialEvents* CEIDCredential::GetEventsAddRef()
 	return pEvents;
 }
 
-// The certificate viewer is a full CryptUI dialog. On the logon / unlock screens LogonUI runs
-// as SYSTEM on the secure desktop, so the link is only offered in the CredUI scenario.
+// TRUE if this process runs as LocalSystem (or if that cannot be determined: fail closed).
+static BOOL IsProcessLocalSystem()
+{
+	BOOL fLocalSystem = TRUE;
+	HANDLE hToken = nullptr;
+	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+	{
+		alignas(TOKEN_USER) BYTE TokenUserBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
+		DWORD dwSize = 0;
+		if (GetTokenInformation(hToken, TokenUser, TokenUserBuffer, sizeof(TokenUserBuffer), &dwSize))
+		{
+			const TOKEN_USER* pTokenUser = reinterpret_cast<const TOKEN_USER*>(TokenUserBuffer);  // NOSONAR - CAST-01: Win32/COM interop cast, layout-verified
+			fLocalSystem = IsWellKnownSid(pTokenUser->User.Sid, WinLocalSystemSid);
+		}
+		else
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetTokenInformation 0x%08x",GetLastError());
+		}
+		CloseHandle(hToken);
+	}
+	else
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"OpenProcessToken 0x%08x",GetLastError());
+	}
+	return fLocalSystem;
+}
+
+// The certificate viewer is a full CryptUI dialog, from which a browser or file dialog can be
+// opened. It must never be reachable from a process running as SYSTEM on the secure desktop:
+// LogonUI on the logon / unlock screens, and also the UAC credential prompt, which is the
+// CredUI scenario hosted by consent.exe as SYSTEM (CVE-2019-1388). The link is therefore only
+// offered in CredUI, outside a secure prompt, and in a process that is not LocalSystem.
 BOOL CEIDCredential::IsCertificateLinkAllowed() const
 {
-	return _cpus == CPUS_CREDUI;
+	if (_cpus != CPUS_CREDUI || (_dwFlags & CREDUIWIN_SECURE_PROMPT))
+	{
+		return FALSE;
+	}
+	// The process identity never changes: query the token once.
+	static const BOOL s_fLocalSystem = IsProcessLocalSystem();
+	return !s_fLocalSystem;
 }
 
 // Securely wipe and reset the PIN edit buffer (mirrors SetDeselected's handling).
@@ -226,23 +263,45 @@ void CEIDCredential::SecureClearPin()
 // restore the PIN prompt (fDisconnected==FALSE). GetFieldState/GetStringValue mirror this
 // state so LogonUI stays consistent even if it re-queries the tile.
 //
-// Runs on the smart-card notifier thread. The field strings, the flag and the events pointer
-// are touched under _csFields; the LogonUI callbacks are made on an AddRef'd copy of the
-// events pointer with the lock dropped, so the UI thread waiting on _csFields can never
-// deadlock with LogonUI marshalling one of these calls back to it.
-void CEIDCredential::SetDisconnected(BOOL fDisconnected)
+// Runs on the smart-card notifier thread, in two steps. The state change (flag + PIN wipe) is
+// made by MarkDisconnectedIfSelected / MarkReconnected under _csFields, with the factory's
+// list lock held by the caller, so it is atomic with respect to SetDeselected (which reads the
+// flag under _csFields) and to the tile's removal (re-checked under the list lock).
+// UpdateConnectionFields then makes the LogonUI callbacks on an AddRef'd copy of the events
+// pointer with no lock held, so the UI thread waiting on _csFields can never deadlock with
+// LogonUI marshalling one of these calls back to it.
+BOOL CEIDCredential::MarkDisconnectedIfSelected()
 {
 	EnterCriticalSection(&_csFields);
-	if (_fDisconnected == fDisconnected)
+	const BOOL fSelected = _fSelected;
+	if (fSelected && !_fDisconnected)
 	{
-		LeaveCriticalSection(&_csFields);
-		return;
+		_fDisconnected = TRUE;
+		// Never keep a typed PIN across a card removal.
+		SecureClearPin();
 	}
-	_fDisconnected = fDisconnected;
+	LeaveCriticalSection(&_csFields);
+	return fSelected;
+}
 
-	// Never keep a typed PIN across a card removal.
-	SecureClearPin();
+BOOL CEIDCredential::MarkReconnected()
+{
+	EnterCriticalSection(&_csFields);
+	const BOOL fWasDisconnected = _fDisconnected;
+	if (fWasDisconnected)
+	{
+		_fDisconnected = FALSE;
+		SecureClearPin();
+	}
+	LeaveCriticalSection(&_csFields);
+	return fWasDisconnected;
+}
 
+void CEIDCredential::UpdateConnectionFields()
+{
+	EnterCriticalSection(&_csFields);
+	// Push whatever the state is now (it is only changed on this same notifier thread).
+	const BOOL fDisconnected = _fDisconnected;
 	ICredentialProviderCredentialEvents* pEvents = _pCredProvCredentialEvents;
 	PWSTR pwszMessage = nullptr;
 	if (pEvents != nullptr)
@@ -255,12 +314,12 @@ void CEIDCredential::SetDisconnected(BOOL fDisconnected)
 		}
 	}
 	LeaveCriticalSection(&_csFields);
-	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetDisconnected tile=%p fDisconnected=%d advised=%d",(void*)this,fDisconnected,pEvents!=nullptr);
+	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: UpdateConnectionFields tile=%p fDisconnected=%d advised=%d",(void*)this,fDisconnected,pEvents!=nullptr);
 
 	if (!pEvents)
 	{
-		// Not currently advised by LogonUI; the state above is enough for the next query.
-		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: SetDisconnected tile=%p SKIPPED field updates (not advised)",(void*)this);
+		// Not currently advised by LogonUI; the state is enough for the next query.
+		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"EVID: UpdateConnectionFields tile=%p SKIPPED field updates (not advised)",(void*)this);
 		return;
 	}
 
@@ -392,7 +451,8 @@ HRESULT CEIDCredential::SetDeselected()
 	// If the card is gone and this tile was only being kept alive because LogonUI had it
 	// selected (the "please reconnect" morph), deselection is our cue to finally drop it:
 	// LogonUI will not remove a selected tile, but now that it is deselected the provider can
-	// erase it and re-enumerate so it disappears. This runs LAST - RemoveDisconnectedTile
+	// erase it and re-enumerate so it disappears. The provider re-checks the flag under the
+	// list lock, so a tile revived since the snapshot above is kept. This runs LAST - RemoveDisconnectedTile
 	// re-enters LogonUI via CredentialsChanged and releases the list's reference to us, so we
 	// must not touch any member after it (LogonUI's own reference keeps `this` alive until the
 	// call returns).
@@ -425,8 +485,8 @@ HRESULT CEIDCredential::GetFieldState(
         {
             *pcpfs = CPFS_HIDDEN;
         }
-        // The certificate viewer must not be reachable from the logon / unlock screens
-        // (SYSTEM on the secure desktop); only CredUI shows the link.
+        // The certificate viewer must not be reachable as SYSTEM on the secure desktop (logon /
+        // unlock screens, UAC prompt in consent.exe); see IsCertificateLinkAllowed.
         if (dwFieldID == SFI_CERTIFICATE && !IsCertificateLinkAllowed())
         {
             *pcpfs = CPFS_HIDDEN;
@@ -692,8 +752,8 @@ HRESULT CEIDCredential::CommandLinkClicked(DWORD dwFieldID)
     {
 		if (!IsCertificateLinkAllowed())
 		{
-			// The link is hidden outside CredUI; refuse it even if LogonUI invokes it anyway.
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Certificate viewer refused in scenario %d",_cpus);
+			// The link is hidden in that case; refuse it even if LogonUI invokes it anyway.
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Certificate viewer refused in scenario %d flags 0x%08x",_cpus,_dwFlags);
 		}
 		else if (ICredentialProviderCredentialEvents* pEvents = GetEventsAddRef())
 		{

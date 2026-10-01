@@ -48,10 +48,11 @@ public:
 	BOOL HasContainerHolder() const;
 	DWORD ContainerHolderCount() const;
 	T* GetContainerHolderAt(DWORD dwIndex);
-	// Remove a single holder by identity (used when a morphed/disconnected tile is
-	// deselected in LogonUI so it can finally leave the tile list). Returns TRUE if the
-	// holder was found and erased. The caller re-enumerates afterwards.
-	BOOL RemoveContainerHolder(T* holder);
+	// Remove a single holder by identity if it is still flagged disconnected (used when a
+	// morphed tile is deselected in LogonUI so it can finally leave the tile list). The flag
+	// is re-checked under the list lock, so a tile revived concurrently is kept. Returns TRUE
+	// if the holder was found and erased. The caller re-enumerates afterwards.
+	BOOL RemoveIfDisconnected(T* holder);
 	// When enabled (used by the credential provider), a card removal that hits the
 	// currently selected tile keeps that tile alive in a "disconnected" state instead
 	// of erasing it, so it can be revived in place when the card is re-inserted. Callers
@@ -68,6 +69,13 @@ private:
 	// without AddRef). PinItem must be called with the list lock held.
 	static void PinItem(T* item);
 	static void UnpinItem(T* item);
+	// Disconnected-tile state changes (list lock held; no-ops for holders without that state)
+	// and the matching LogonUI field updates (list lock NOT held).
+	static BOOL MarkItemDisconnectedIfSelected(T* item);
+	static BOOL MarkItemReconnected(T* item);
+	static void UpdateItemConnectionFields(T* item);
+	// Release the list's reference to an erased item (detaching it from the provider first).
+	static void ReleaseItem(T* item);
 	CREDENTIAL_PROVIDER_USAGE_SCENARIO _cpus;
     DWORD _dwFlags;
 	std::list<T*> _CredentialList;

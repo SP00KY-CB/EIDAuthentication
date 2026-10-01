@@ -188,6 +188,11 @@ BOOL CContainer::Erase() const
 
 BOOL CContainer::IsOnReader(LPCTSTR szReaderName) const
 {
+	// _szReaderName is NULL if ValidateAndCopyString rejected or failed to copy it.
+	if (_szReaderName == nullptr || szReaderName == nullptr)
+	{
+		return FALSE;
+	}
 	return _tcscmp(_szReaderName,szReaderName) == 0;
 }
 
