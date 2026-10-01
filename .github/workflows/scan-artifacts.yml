@@ -207,32 +207,36 @@ jobs:
           VT_ANALYSIS: ${{ steps.virustotal-scan.outputs.analysis }}
           VT_OUTCOME: ${{ steps.virustotal-scan.outcome }}
         run: |
-          echo "## VirusTotal Scan Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Scan completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## VirusTotal Scan Results"
+            echo ""
+            echo "Scan completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo ""
 
-          # Log analysis URLs if available
-          if [ -n "$VT_ANALYSIS" ]; then
-            echo "### Analysis URLs" >> $GITHUB_STEP_SUMMARY
-            echo "$VT_ANALYSIS" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
+            # Log analysis URLs if available
+            if [ -n "$VT_ANALYSIS" ]; then
+              echo "### Analysis URLs"
+              echo "$VT_ANALYSIS"
+              echo ""
+            fi
 
-          # Check scan outcome and log appropriately
+            # Check scan outcome and log appropriately
+            echo "### Scan Status"
+            if [ "$VT_OUTCOME" == "failure" ]; then
+              echo "Some artifacts may have been flagged. Review the analysis URLs above."
+            else
+              echo "All artifacts scanned successfully."
+            fi
+
+            echo ""
+            echo "---"
+            echo "_Note: This scan is informational. Detections may be false positives for security software._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # WARN-01: Warning annotation (must be standalone echo, not to GITHUB_STEP_SUMMARY)
           if [ "$VT_OUTCOME" == "failure" ]; then
-            echo "### Scan Status" >> $GITHUB_STEP_SUMMARY
-            # WARN-01: Warning annotation (must be standalone echo, not to GITHUB_STEP_SUMMARY)
             echo "::warning::VirusTotal scan detected potential issues. Check the analysis URLs above for details."
-            echo "Some artifacts may have been flagged. Review the analysis URLs above." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "### Scan Status" >> $GITHUB_STEP_SUMMARY
-            echo "All artifacts scanned successfully." >> $GITHUB_STEP_SUMMARY
           fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "_Note: This scan is informational. Detections may be false positives for security software._" >> $GITHUB_STEP_SUMMARY
 
   # Phase 44: Commit Comment Integration
   comment:

@@ -1,0 +1,78 @@
+# MegaLinter configuration (https://megalinter.io), run by .github/workflows/megalinter.yml.
+#
+# Only the linters below run. Blocking ones fail the workflow; everything in
+# DISABLE_ERRORS_LINTERS reports to the job log, the uploaded report artifact
+# and code scanning alerts without failing it. Most of the C/C++ and style
+# linters start out non-blocking because the codebase predates them; promote a
+# linter to blocking once its backlog is cleared.
+APPLY_FIXES: none
+VALIDATE_ALL_CODEBASE: true
+
+ENABLE_LINTERS:
+  # GitHub Actions workflows
+  - ACTION_ACTIONLINT
+  - ACTION_ZIZMOR
+  # C / C++
+  - C_CPPCHECK
+  - CPP_CPPCHECK
+  - C_CPPLINT
+  - CPP_CPPLINT
+  # Scripts and data files
+  - POWERSHELL_POWERSHELL
+  - XML_XMLLINT
+  - JSON_JSONLINT
+  - YAML_YAMLLINT
+  - MARKDOWN_MARKDOWNLINT
+  # Repository-wide security scanners
+  - REPOSITORY_BETTERLEAKS
+  - REPOSITORY_CHECKOV
+  - REPOSITORY_DEVSKIM
+  - REPOSITORY_GIT_DIFF
+  - REPOSITORY_GRYPE
+  - REPOSITORY_KINGFISHER
+  - REPOSITORY_OSV_SCANNER
+  - REPOSITORY_SECRETLINT
+  - REPOSITORY_SEMGREP
+  - REPOSITORY_SYFT
+  - REPOSITORY_TRIVY
+  - REPOSITORY_TRUFFLEHOG
+  # Docs and duplication
+  - SPELL_CODESPELL
+  - SPELL_LYCHEE
+  - COPYPASTE_JSCPD
+
+DISABLE_ERRORS_LINTERS:
+  - ACTION_ZIZMOR
+  - C_CPPCHECK
+  - CPP_CPPCHECK
+  - C_CPPLINT
+  - CPP_CPPLINT
+  - POWERSHELL_POWERSHELL
+  - YAML_YAMLLINT
+  - MARKDOWN_MARKDOWNLINT
+  - REPOSITORY_BETTERLEAKS
+  - REPOSITORY_CHECKOV
+  - REPOSITORY_DEVSKIM
+  - REPOSITORY_GRYPE
+  - REPOSITORY_KINGFISHER
+  - REPOSITORY_OSV_SCANNER
+  - REPOSITORY_SECRETLINT
+  - REPOSITORY_SEMGREP
+  - REPOSITORY_SYFT
+  - REPOSITORY_TRIVY
+  - REPOSITORY_TRUFFLEHOG
+  - SPELL_CODESPELL
+  - SPELL_LYCHEE
+  - COPYPASTE_JSCPD
+
+# Fuzz corpora are binary test inputs; include/ is a vendored Microsoft header.
+FILTER_REGEX_EXCLUDE: '(^fuzz/corpus|^include/)'
+
+SARIF_REPORTER: true
+TEXT_REPORTER: true
+GITHUB_COMMENT_REPORTER: false
+GITHUB_STATUS_REPORTER: false
+UPDATED_SOURCES_REPORTER: false
+FLAVOR_SUGGESTIONS: false
+PRINT_ALPACA: false
+SHOW_ELAPSED_TIME: true

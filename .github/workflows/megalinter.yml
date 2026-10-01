@@ -1,0 +1,54 @@
+name: MegaLinter
+
+# MegaLinter (https://megalinter.io) runs the linters and security scanners
+# listed in .mega-linter.yml: actionlint and zizmor for the workflows, cppcheck
+# and cpplint for the C/C++ sources, PSScriptAnalyzer for the PowerShell
+# scripts, plus repository-wide scanners (Semgrep, DevSkim, Trivy, Grype,
+# OSV-Scanner, Checkov and several secret scanners). Which ones block the
+# build is set in .mega-linter.yml. The full report is uploaded as an artifact
+# and as SARIF to code scanning alerts.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: megalinter-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  megalinter:
+    name: MegaLinter
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          # Full history for the repository-level scanners.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run MegaLinter
+        uses: oxsecurity/megalinter@9949bad031045f366be2467e00e8371a7328a2e2  # v10.1.0
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: megalinter-reports
+          path: megalinter-reports
+          retention-days: 14
+
+      - name: Upload SARIF
+        if: always() && hashFiles('megalinter-reports/megalinter-report.sarif') != ''
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4
+        with:
+          sarif_file: megalinter-reports/megalinter-report.sarif
+          category: megalinter

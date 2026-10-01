@@ -1,0 +1,59 @@
+name: KICS
+
+# Checkmarx KICS: infrastructure-as-code and CI/CD misconfiguration scanning.
+# The only IaC in this repository is its GitHub Actions workflows, which KICS
+# checks for things like script injection from untrusted event fields and
+# over-broad token permissions. Results go to code scanning alerts; high
+# severity findings fail the job.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * 3'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: kics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kics:
+    name: KICS scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+
+      - name: Run KICS
+        uses: Checkmarx/kics-github-action@05aa5eb70eede1355220f4ca5238d96b397e30a6  # v2.1.20
+        with:
+          path: .
+          exclude_paths: 'fuzz/*,include/*'
+          output_path: kics-results
+          output_formats: json,sarif
+          fail_on: high
+          # Secret detection is secret-scan.yml's job (five dedicated
+          # scanners). KICS's generic-token query only adds false positives
+          # here, e.g. `const token = (await tr.json()).access_token` in
+          # pr-report.yml, a runtime OAuth token rather than a literal.
+          disable_secrets: true
+          enable_jobs_summary: true
+          # The action's PR comments need pull-requests: write; the job
+          # summary and code scanning alerts carry the same results.
+          enable_comments: false
+
+      - name: Upload SARIF
+        if: always() && hashFiles('kics-results/results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4
+        with:
+          sarif_file: kics-results/results.sarif
+          category: kics
