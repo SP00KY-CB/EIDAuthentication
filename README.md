@@ -132,7 +132,12 @@ HKLM\SYSTEM\CurrentControlSet\Control\Lsa\limitblankpassworduse = 0
 
 This project was renamed to **OpenAccess EID** at v2.0.00. Running the new installer on a machine with EID Authentication installed removes the old version and installs OpenAccess EID in its place. **A reboot is required**: Windows reads its LSA authentication-package list only at boot.
 
-**Users must re-enrol after upgrading from v2.0.00 or earlier.** The uninstaller of those versions deletes every user's stored credential while unregistering, regardless of its cleanup checkboxes, and the new installer has to run it; the installer warns before it does. Certificates and the smart-card policies under `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider` are carried over. From this release on, uninstalling or upgrading keeps stored credentials; they are removed only when the uninstaller's "Remove EID certificate mappings from users" box is ticked.
+**Enrolments survive an upgrade from v2.0.00 or earlier.** The uninstaller of those versions deletes every user's stored credential while unregistering (in `DllUnRegister`, regardless of its cleanup checkboxes), and the new installer has to run it. So before running it, the installer renames the package DLL that LSASS has loaded (`OpenAccessEIDPackage.dll`, or `EIDAuthenticationPackage.dll` for v1.3.00 and earlier) aside - it is deleted at the next reboot - and puts this version's package DLL at that path. The old uninstaller's `rundll32 …,DllUnRegister` then runs this version's `DllUnRegister`, which only removes registrations. If that substitution fails:
+
+- **interactive** installs ask before running the old uninstaller (default: No, cancel);
+- **silent** (`/S`) installs stop with exit code 2 before anything is uninstalled, unless `/WIPEENROLMENTS=1` is passed to accept that every user must re-enrol.
+
+Either way the reason, and the re-enrol notice when enrolments were deleted, are appended to `%TEMP%\OpenAccessEID-install.log` (of the account running the installer; `C:\Windows\Temp` for SYSTEM). Certificates and the smart-card policies under `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider` are carried over. From this release on, uninstalling or upgrading keeps stored credentials; they are removed only when the uninstaller's "Remove EID certificate mappings from users" box is ticked.
 
 What changes, and what needs administrator action:
 
@@ -140,12 +145,24 @@ What changes, and what needs administrator action:
 |---|---|---|---|
 | LSA package | `EIDAuthenticationPackage.dll` | `OpenAccessEIDPackage.dll` | None - the installer swaps the registration. Update any scripts that name the DLL. |
 | Install folder | `C:\Program Files\EID Authentication` | `C:\Program Files\OpenAccess EID` | None. |
-| Logs and `logging.json` | `C:\ProgramData\EIDAuthentication` | `C:\ProgramData\OpenAccessEID` | Re-point any SIEM collector or scheduled task. The old folder is moved only if it and everything in it is owned by SYSTEM/Administrators and contains no junction; otherwise, or if the move fails (a file held open), existing logs stay in the old folder and the installer says so. The installer creates the new folder owned by Administrators, with Full control for SYSTEM and Administrators and read-only for Users. `logging.json` is ignored unless it and the folder are owned by SYSTEM or Administrators (`icacls <path> /setowner *S-1-5-32-544`). |
+| Logs and `logging.json` | `C:\ProgramData\EIDAuthentication` | `C:\ProgramData\OpenAccessEID` | Re-point any SIEM collector or scheduled task. The old folder is moved only if it and everything in it is owned by SYSTEM/Administrators and contains no junction; otherwise, or if the move fails (a file held open), existing logs stay in the old folder and the installer says so. The installer creates the new folder owned by Administrators, with Full control for SYSTEM and Administrators and read-only for Users. `logging.json` is ignored unless it and the folder are owned by SYSTEM or Administrators (`icacls <path> /setowner *S-1-5-32-544`); see [Installation notes](#installation-notes). |
 | Logging settings | `HKLM\SOFTWARE\EIDAuthentication\LogManager` | `HKLM\SOFTWARE\OpenAccessEID\LogManager` | None - copied across. |
 | Group Policy template | `EIDAuthentication.admx`, namespace `EIDAuthentication.Policies` | `OpenAccessEID.admx`, namespace `OpenAccessEID.Policies` | **Re-apply logging policies** using the new template, and copy it to any central PolicyDefinitions store. Settings made through the old template are not carried over. |
 | Scheduled task | `EID Authentication\Apply Trace Config` | `OpenAccess EID\Apply Trace Config` | None. |
 
 Component names keep the `EID` prefix (`EIDCredentialProvider.dll`, `EIDMigrate.exe`, and so on), all GUIDs are unchanged, and the stored-credential format is identical.
+
+## Installation notes
+
+- **Reboot after installing or upgrading.** LSASS keeps `OpenAccessEIDPackage.dll` and `EIDPasswordChangeNotification.dll` loaded until the next boot. The installer renames the loaded copies aside (deleted at the reboot), copies the new ones in, and also queues a reboot-time rename of a staged copy (`<name>.oaeid-new`) onto each DLL. That queued rename runs after any delete the previous version's uninstaller queued for the same file, so the new DLLs are what is left after the reboot.
+- **Install folder permissions.** `EIDTraceConsumer.exe` runs as SYSTEM from the install folder, so whatever folder is chosen (including with `/D=`), the installer makes it owned by Administrators with inheritance removed: Full control for SYSTEM and Administrators, read/execute for Users. It refuses a folder that is a junction or that already holds anything a standard user owns or can modify.
+- **`C:\ProgramData\OpenAccessEID`.** Logs and `logging.json` live here. The folder, `logs` and `logging.json` must be owned by SYSTEM or Administrators and must not be writable by anyone else; `logging.json` is otherwise ignored (an ETW `[CONFIG_REJECT]` event is recorded). If the folder already exists and fails that check, the installer moves it aside to `OpenAccessEID.untrusted-{random GUID}` instead of adopting it; if that is impossible it says so, and file logging stays off until an administrator removes the folder. If the check itself cannot run (PowerShell blocked or in constrained language mode), the folder is secured in place instead.
+- **Uninstall.** The opt-in "Remove EID certificate mappings from users" runs before the package is unregistered. After `DllUnRegister`, the uninstaller checks `Security Packages`, `Authentication Packages` and `Notification Packages` under `HKLM\SYSTEM\CurrentControlSet\Control\Lsa` itself and removes any OpenAccess EID entry still listed. If LSA protection was turned off with `Disable-LsaProtection.ps1` and not restored, the uninstaller warns and keeps the script in `C:\ProgramData\OpenAccessEID\LsaProtectionBackup` so `-Restore` can still be run.
+
+## Compatibility notes
+
+- **Encrypted (card-bound) credentials need the card's key-exchange key.** Logon with an encrypted stored credential now requires the card to sign with its key-exchange (`AT_KEYEXCHANGE`) key. Cards whose certificate key cannot do that must be re-enrolled.
+- **Certificates larger than 16 KB.** An enrolment whose certificate is larger than 16 KB cannot be re-sealed when the user changes their Windows password; the stored credential then stops matching the password. Use a smaller certificate, or re-enrol after a password change.
 
 ## Software Architecture
 
@@ -411,7 +428,8 @@ The EIDMigrateUI wizard provides four migration flows:
 
 Export files use the `.eid` extension with the following security:
 
-- **Encryption:** AES-256-GCM (PBKDF2-HMAC-SHA256 key derivation)
+- **Encryption:** AES-256-GCM (PBKDF2-HMAC-SHA256 key derivation, per RFC 8018)
+- **Version:** files written by this release carry a newer format version, because the key derivation was corrected to follow RFC 8018. Exports made by earlier releases remain importable; older releases may not be able to read the new files.
 - **Password:** Minimum 16 characters required
 - **Integrity:** HMAC-SHA256 signature
 - **Content:** Credentials, groups, and metadata in JSON format
@@ -442,8 +460,11 @@ release by opening an issue at:
 ### Disable LSA Protection (manual, admin-only)
 
 The installer ships a PowerShell helper that prints a warning page,
-probes the current state, backs up the prior values, and toggles
-`RunAsPPL`:
+probes the current state, backs up the prior values (to
+`C:\ProgramData\OpenAccessEID\LsaProtectionBackup\RunAsPPL.backup.txt`; a
+later run never overwrites that backup), and toggles `RunAsPPL`. Run it with
+`-Restore` to put back the recorded `RunAsPPL`/`RunAsPPLBoot` values (with no
+backup it sets `RunAsPPL=1`):
 
 ```
 %ProgramFiles%\OpenAccess EID\tools\Disable-LsaProtection.ps1
