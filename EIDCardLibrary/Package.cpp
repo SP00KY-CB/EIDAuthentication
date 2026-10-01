@@ -575,7 +575,7 @@ static BOOL IsCountedStringHeaderValid(const UNICODE_STRING& us)
 
 NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAuthenticationBase, ULONG AuthenticationInformationLength)  // NOSONAR - API-01: signature dictated by Windows/callback API
 {
-	EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Diff %d %d",(PUCHAR) pUnlockLogon, (PUCHAR) ClientAuthenticationBase);
+	EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Diff %p %p",(PUCHAR) pUnlockLogon, (PUCHAR) ClientAuthenticationBase);
 	if (!pUnlockLogon)
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"pUnlockLogon NULL");
@@ -616,9 +616,9 @@ NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAu
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"UserName Overflow2");
 			return STATUS_INVALID_PARAMETER_3;
 		}
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap Logon from %d",pUnlockLogon->Logon.UserName.Buffer);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap Logon from %p",pUnlockLogon->Logon.UserName.Buffer);
 		pUnlockLogon->Logon.UserName.Buffer = PWSTR((ULONG_PTR)( pUnlockLogon) + (ULONG_PTR) pUnlockLogon->Logon.UserName.Buffer);
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap Logon to %d",pUnlockLogon->Logon.UserName.Buffer);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap Logon to %p",pUnlockLogon->Logon.UserName.Buffer);
 	}
 	if ((pUnlockLogon->Logon.LogonDomainName.Buffer) != nullptr)
 	{
@@ -633,9 +633,9 @@ NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAu
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"LogonDomainName Overflow2");
 			return STATUS_INVALID_PARAMETER_3;
 		}
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap LogonDomainName from %d",pUnlockLogon->Logon.LogonDomainName.Buffer);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap LogonDomainName from %p",pUnlockLogon->Logon.LogonDomainName.Buffer);
 		pUnlockLogon->Logon.LogonDomainName.Buffer = PWSTR((ULONG_PTR)( pUnlockLogon) + (ULONG_PTR) pUnlockLogon->Logon.LogonDomainName.Buffer);
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap LogonDomainName to %d",pUnlockLogon->Logon.LogonDomainName.Buffer);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap LogonDomainName to %p",pUnlockLogon->Logon.LogonDomainName.Buffer);
 	}
 	if ((pUnlockLogon->Logon.Pin.Buffer) != nullptr)
 	{
@@ -650,9 +650,9 @@ NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAu
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Pin Overflow2");
 			return STATUS_INVALID_PARAMETER_3;
 		}
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap Pin from %d",pUnlockLogon->Logon.Pin.Buffer);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap Pin from %p",pUnlockLogon->Logon.Pin.Buffer);
 		pUnlockLogon->Logon.Pin.Buffer = PWSTR((ULONG_PTR)( pUnlockLogon) + (ULONG_PTR) pUnlockLogon->Logon.Pin.Buffer);
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap Pin to %d",pUnlockLogon->Logon.Pin.Buffer);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap Pin to %p",pUnlockLogon->Logon.Pin.Buffer);
 	}
 	if ((pUnlockLogon->Logon.CspData) != nullptr)
 	{
@@ -662,9 +662,9 @@ NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAu
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CspData Overflow");
 			return STATUS_INVALID_PARAMETER_3;
 		}
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap CSPData from %d",pUnlockLogon->Logon.CspData);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap CSPData from %p",pUnlockLogon->Logon.CspData);
 		pUnlockLogon->Logon.CspData = PUCHAR( (PBYTE)pUnlockLogon + (ULONG_PTR) pUnlockLogon->Logon.CspData);
-		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap CSPData to %d",pUnlockLogon->Logon.CspData);
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Remap CSPData to %p",pUnlockLogon->Logon.CspData);
 
 		// The check above bounds the CspData BLOCK against the submit buffer.
 		// It says nothing about the block's interior: EID_SMARTCARD_CSP_INFO
