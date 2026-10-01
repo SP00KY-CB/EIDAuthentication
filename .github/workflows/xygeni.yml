@@ -1,0 +1,54 @@
+name: Xygeni
+
+# Xygeni scanner: SAST, open source dependency and secrets scanning, with
+# results sent to the Xygeni dashboard (https://in.xygeni.io/dashboard).
+# The Xygeni GitHub integration connects the repository; the scanner run here
+# is what produces the findings.
+#
+# Runs on pushes to main, weekly and on demand rather than on every PR, to
+# stay well inside the free plan's 200 scans a month. --never-fail (the
+# action's default) keeps findings in the dashboard instead of failing the
+# job; the job fails only if the scan itself cannot run.
+#
+# Secret: XYGENI_TOKEN, an API token from the Xygeni dashboard.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '53 5 * * 2'   # Tuesdays
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: xygeni-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  xygeni:
+    name: Xygeni scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check that the API token is configured
+        env:
+          XYGENI_TOKEN: ${{ secrets.XYGENI_TOKEN }}
+        run: |
+          if [ -z "$XYGENI_TOKEN" ]; then
+            echo "::error::Repository secret XYGENI_TOKEN is not set (Xygeni dashboard: create an API token)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Xygeni scanner
+        uses: xygeni/xygeni-action@13c6ed2797df7d85749864e2cbcf09c893f43b23  # v6.4.0
+        with:
+          token: ${{ secrets.XYGENI_TOKEN }}
+          # Read-only token for the repository settings checks.
+          gh_token: ${{ github.token }}
