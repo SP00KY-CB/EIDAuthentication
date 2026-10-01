@@ -556,6 +556,23 @@ static BOOL SafeCheckBufferOverflow(ULONG_PTR offset, ULONG length, ULONG limit)
 	return offset + length > limit;
 }
 
+// A counted string is only well formed if Length <= MaximumLength and an absent
+// (NULL) Buffer carries no length. The rebasing below skips NULL buffers, so
+// without this a NULL Pin.Buffer with a non-zero Length reached
+// memcpy_s(..., NULL, Length) in LsaApLogonUserEx2 and fast-failed LSASS.
+static BOOL IsCountedStringHeaderValid(const UNICODE_STRING& us)
+{
+	if (us.Length > us.MaximumLength)
+	{
+		return FALSE;
+	}
+	if (us.Buffer == nullptr && (us.Length != 0 || us.MaximumLength != 0))
+	{
+		return FALSE;
+	}
+	return TRUE;
+}
+
 NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAuthenticationBase, ULONG AuthenticationInformationLength)  // NOSONAR - API-01: signature dictated by Windows/callback API
 {
 	EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Diff %d %d",(PUCHAR) pUnlockLogon, (PUCHAR) ClientAuthenticationBase);
@@ -573,6 +590,18 @@ NTSTATUS RemapPointer(PEID_INTERACTIVE_UNLOCK_LOGON pUnlockLogon, PVOID ClientAu
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"AuthenticationInformationLength %u < sizeof(EID_INTERACTIVE_UNLOCK_LOGON)",
 			AuthenticationInformationLength);
 		return STATUS_INVALID_PARAMETER_3;
+	}
+	if (!IsCountedStringHeaderValid(pUnlockLogon->Logon.UserName) ||
+		!IsCountedStringHeaderValid(pUnlockLogon->Logon.LogonDomainName) ||
+		!IsCountedStringHeaderValid(pUnlockLogon->Logon.Pin))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Malformed UNICODE_STRING (NULL Buffer with length, or Length > MaximumLength)");
+		return STATUS_INVALID_PARAMETER;
+	}
+	if (pUnlockLogon->Logon.CspData == nullptr && pUnlockLogon->Logon.CspDataLength != 0)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CspData NULL with CspDataLength %u",pUnlockLogon->Logon.CspDataLength);
+		return STATUS_INVALID_PARAMETER;
 	}
 	if ((pUnlockLogon->Logon.UserName.Buffer) != nullptr)
 	{

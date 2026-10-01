@@ -741,17 +741,21 @@ extern "C"
 		)
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Enter ContextAttribute = %d",ContextAttribute);
+		// SECURITY: this is the LSA-mode dispatch, so pBuffer is an address in the
+		// CLIENT process, not in LSASS. Never write through it directly: build each
+		// structure locally and hand it over with CopyToClientBuffer, and allocate
+		// any embedded data (the user name) in the client with AllocateClientBuffer.
 		CSecurityContext* pContext;
-		PSecPkgContext_Sizes ContextSizes;
-		PSecPkgContext_NamesW ContextNames;
-		PSecPkgContext_Lifespan ContextLifespan;
+		SecPkgContext_Sizes ContextSizes;
+		SecPkgContext_NamesW ContextNames;
+		SecPkgContext_Lifespan ContextLifespan;
+		NTSTATUS Status;  // NOSONAR - EXPLICIT-TYPE-01: NTSTATUS visible for security audit
 		switch(ContextAttribute) 
 		{
 			case SECPKG_ATTR_SIZES:
-				ContextSizes = reinterpret_cast<PSecPkgContext_Sizes>(pBuffer);  // NOSONAR - CAST-01: Win32/LSA interop cast, layout-verified
-				ContextSizes->cbMaxSignature = 0;
-				ContextSizes->cbSecurityTrailer = 0;
-				ContextSizes->cbBlockSize = 0;
+				ContextSizes.cbMaxSignature = 0;
+				ContextSizes.cbSecurityTrailer = 0;
+				ContextSizes.cbBlockSize = 0;
 				// 300 was never enough and is now actively wrong. A challenge
 				// token is sizeof(EID_CHALLENGE_MESSAGE) + a 256-byte challenge
 				// + 2 bytes per username character, i.e. over 300 for any name
@@ -761,28 +765,67 @@ extern "C"
 				// outright, so a peer that sizes its buffer from this value -
 				// the documented idiom - would fail every handshake. Match the
 				// package's own advertised cbMaxToken instead.
-				ContextSizes->cbMaxToken = 5000;
+				ContextSizes.cbMaxToken = 5000;
+				Status = MyLsaDispatchTable->CopyToClientBuffer(NULL, sizeof(ContextSizes), pBuffer, &ContextSizes);
+				if (Status != STATUS_SUCCESS)
+				{
+					EIDLogErrorWithContext("CopyToClientBuffer", HRESULT_FROM_NT(Status), L"attr=SECPKG_ATTR_SIZES");
+					return Status;
+				}
 				break;
 			case SECPKG_ATTR_NAMES:
+			{
 				if (!ContextHandle)
 				{
 					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ContextHandle = %d",ContextHandle);
 					return STATUS_INVALID_HANDLE;
 				}
 				pContext = CSecurityContext::GetContextFromHandle(ContextHandle);
-				ContextNames = reinterpret_cast<PSecPkgContext_Names>(pBuffer);  // NOSONAR - CAST-01: Win32/LSA interop cast, layout-verified
-				ContextNames->sUserName = pContext->GetUserName();
-				if (ContextNames->sUserName == NULL)
+				if (!pContext)
+				{
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ContextHandle = %d : SEC_E_INVALID_HANDLE",ContextHandle);
+					return SEC_E_INVALID_HANDLE;
+				}
+				PWSTR szUserName = pContext->GetUserName();  // LSA heap copy, freed below
+				if (szUserName == NULL)
 				{
 					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INSUFFICIENT_MEMORY");
 					return SEC_E_INSUFFICIENT_MEMORY;
 				}
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Username = %s",ContextNames->sUserName);
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Username = %s",szUserName);
+				const ULONG cbUserName = static_cast<ULONG>((wcslen(szUserName) + 1) * sizeof(WCHAR));
+				PVOID pClientUserName = NULL;
+				Status = MyLsaDispatchTable->AllocateClientBuffer(NULL, cbUserName, &pClientUserName);
+				if (Status != STATUS_SUCCESS)
+				{
+					EIDFree(szUserName);
+					EIDLogErrorWithContext("AllocateClientBuffer", HRESULT_FROM_NT(Status), L"attr=SECPKG_ATTR_NAMES");
+					return Status;
+				}
+				Status = MyLsaDispatchTable->CopyToClientBuffer(NULL, cbUserName, pClientUserName, szUserName);
+				EIDFree(szUserName);
+				if (Status == STATUS_SUCCESS)
+				{
+					ContextNames.sUserName = static_cast<SEC_WCHAR*>(pClientUserName);
+					Status = MyLsaDispatchTable->CopyToClientBuffer(NULL, sizeof(ContextNames), pBuffer, &ContextNames);
+				}
+				if (Status != STATUS_SUCCESS)
+				{
+					MyLsaDispatchTable->FreeClientBuffer(NULL, pClientUserName);
+					EIDLogErrorWithContext("CopyToClientBuffer", HRESULT_FROM_NT(Status), L"attr=SECPKG_ATTR_NAMES");
+					return Status;
+				}
 				break;
+			}
 			case SECPKG_ATTR_LIFESPAN:
-				ContextLifespan = reinterpret_cast<PSecPkgContext_Lifespan>(pBuffer);  // NOSONAR - CAST-01: Win32/LSA interop cast, layout-verified
-				ContextLifespan->tsStart = Never;
-				ContextLifespan->tsExpiry = Forever;
+				ContextLifespan.tsStart = Never;
+				ContextLifespan.tsExpiry = Forever;
+				Status = MyLsaDispatchTable->CopyToClientBuffer(NULL, sizeof(ContextLifespan), pBuffer, &ContextLifespan);
+				if (Status != STATUS_SUCCESS)
+				{
+					EIDLogErrorWithContext("CopyToClientBuffer", HRESULT_FROM_NT(Status), L"attr=SECPKG_ATTR_LIFESPAN");
+					return Status;
+				}
 				break;
 			default:
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"SEC_E_INVALID_TOKEN");

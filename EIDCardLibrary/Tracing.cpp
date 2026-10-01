@@ -150,16 +150,22 @@ void EIDCardLibraryTraceEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR
 		EIDCardLibraryTracingRegister();
 	}
 
+	// _TRUNCATE, not a count equal to the buffer size: with an explicit count the
+	// CRT treats output that does not fit as an invalid parameter and fast-fails,
+	// which kills LSASS - and callers trace caller-controlled strings (user names)
+	// before they are validated. With _TRUNCATE an over-long message is cut short
+	// and ret is -1; the buffer is still NUL-terminated, so emit it anyway.
+	Buffer[0] = L'\0';
 	va_start (ap, szFormat);
-	ret = _vsnwprintf_s (Buffer, 256, 256, szFormat, ap);
+	ret = _vsnwprintf_s (Buffer, ARRAYSIZE(Buffer), _TRUNCATE, szFormat, ap);
 	va_end (ap);
-	if (ret < 0) return;
-	Buffer[255] = L'\0';
+	if (ret < 0 && Buffer[0] == L'\0') return;
+	Buffer[ARRAYSIZE(Buffer) - 1] = L'\0';
 #ifdef _DEBUG
-	swprintf_s(Buffer2,356,L"%S(%d) : %S - %s\r\n",szFile,dwLine,szFunction,Buffer);
+	_snwprintf_s(Buffer2,ARRAYSIZE(Buffer2),_TRUNCATE,L"%S(%d) : %S - %s\r\n",szFile,dwLine,szFunction,Buffer);
 	OutputDebugString(Buffer2);
 #endif
-	swprintf_s(Buffer2,356,L"%S(%d) : %s",szFunction,dwLine,Buffer);
+	_snwprintf_s(Buffer2,ARRAYSIZE(Buffer2),_TRUNCATE,L"%S(%d) : %s",szFunction,dwLine,Buffer);
 
 	EventWriteString(hPub,dwLevel,0,Buffer2);
 
@@ -310,7 +316,7 @@ void MessageBoxWin32Ex2(DWORD status, HWND hWnd, LPCSTR szFile, DWORD dwLine) {
 	wchar_t szMessage[1024];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 	wchar_t szTitle[1024];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
 	DWORD dwFmtLen;
-	swprintf_s(szTitle,ARRAYSIZE(szTitle),L"%hs(%d)",szFile, dwLine);
+	_snwprintf_s(szTitle,ARRAYSIZE(szTitle),_TRUNCATE,L"%hs(%d)",szFile, dwLine);
 	if (status >= WINHTTP_ERROR_BASE && status <= WINHTTP_ERROR_LAST)
 	{
 		// winhttp error message
@@ -327,7 +333,7 @@ void MessageBoxWin32Ex2(DWORD status, HWND hWnd, LPCSTR szFile, DWORD dwLine) {
 	// status code would leave Error uninitialized and be dereferenced and freed.
 	if (dwFmtLen != 0 && Error != nullptr)
 	{
-		swprintf_s(szMessage,ARRAYSIZE(szMessage),L"0x%08X - %s",status,(wchar_t *) Error);
+		_snwprintf_s(szMessage,ARRAYSIZE(szMessage),_TRUNCATE,L"0x%08X - %s",status,(wchar_t *) Error);
 		LocalFree(Error);
 	}
 	else
@@ -464,10 +470,12 @@ void EIDSecurityAuditEx(LPCSTR szFile, DWORD dwLine, LPCSTR szFunction, UCHAR dw
 		break;
 	}
 
+	// ret == -1 with a non-empty buffer means "truncated": still emit the audit.
+	Buffer[0] = L'\0';
 	va_start(ap, szFormat);
 	ret = _vsnwprintf_s(Buffer, ARRAYSIZE(Buffer), _TRUNCATE, szFormat, ap);
 	va_end(ap);
-	if (ret < 0) return;
+	if (ret < 0 && Buffer[0] == L'\0') return;
 
 	// Format with security audit prefix and location info.
 	// _snwprintf_s/_TRUNCATE, not swprintf_s: the prefix, function name and an already
@@ -525,7 +533,7 @@ void EIDLogErrorWithContextEx(  // NOSONAR - VARIADIC-01: Error logging requires
 		va_start(ap, szAdditionalContext);
 		ret = _vsnwprintf_s(ContextBuffer, ARRAYSIZE(ContextBuffer), _TRUNCATE, szAdditionalContext, ap);
 		va_end(ap);
-		if (ret < 0)
+		if (ret < 0 && ContextBuffer[0] == L'\0')  // -1 with text means truncated: keep it
 		{
 			wcscpy_s(ContextBuffer, L"(context formatting error)");
 		}
@@ -534,13 +542,13 @@ void EIDLogErrorWithContextEx(  // NOSONAR - VARIADIC-01: Error logging requires
 	// Format final message with structured prefix
 	if (szAdditionalContext != nullptr && ContextBuffer[0] != L'\0')
 	{
-		swprintf_s(FinalBuffer, ARRAYSIZE(FinalBuffer),
+		_snwprintf_s(FinalBuffer, ARRAYSIZE(FinalBuffer), _TRUNCATE,
 			L"[ERROR_CONTEXT] %S:%d - Operation '%S' failed: hr=0x%08X, %s",
 			szFunction, dwLine, operation, hr, ContextBuffer);
 	}
 	else
 	{
-		swprintf_s(FinalBuffer, ARRAYSIZE(FinalBuffer),
+		_snwprintf_s(FinalBuffer, ARRAYSIZE(FinalBuffer), _TRUNCATE,
 			L"[ERROR_CONTEXT] %S:%d - Operation '%S' failed: hr=0x%08X",
 			szFunction, dwLine, operation, hr);
 	}
@@ -575,7 +583,7 @@ void EIDLogStackTraceEx(
 
 	// Log error context at ERROR level
 	WCHAR ErrorBuffer[256];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
-	swprintf_s(ErrorBuffer, ARRAYSIZE(ErrorBuffer),
+	_snwprintf_s(ErrorBuffer, ARRAYSIZE(ErrorBuffer), _TRUNCATE,
 		L"[STACK_TRACE] %S:%d - Error code 0x%08X, call stack follows:",
 		szFunction, dwLine, errorCode);
 
@@ -644,16 +652,19 @@ void EIDCardLibraryLogStructured(  // NOSONAR - COMPLEXITY-01: parameter count d
 	InitOnceExecuteOnce(&g_CSVInitOnce, EIDCSVInitOnceCallback, nullptr, nullptr);
 
 	// Build ETW message (with event ID prefix for correlation)
+	// _TRUNCATE: pwszMessage can itself be a full 512-char audit buffer, and a
+	// swprintf_s overflow fast-fails the process (LSASS).
 	WCHAR szETWMessage[512];  // NOSONAR - LSASS-01: Stack-allocated buffer for LSASS safety
-	swprintf_s(szETWMessage, ARRAYSIZE(szETWMessage),
+	_snwprintf_s(szETWMessage, ARRAYSIZE(szETWMessage), _TRUNCATE,
 		L"[EID:%04u] %s: %s",
 		static_cast<DWORD>(eventId),  // NOSONAR - ENUM-01: explicit cast to DWORD retained for logging
 		pwszAction ? pwszAction : L"(no action)",
 		pwszMessage ? pwszMessage : L"(no message)");
 
-	// Log to ETW (existing functionality)
+	// Log to ETW (existing functionality). The built message carries caller data
+	// (user names, audit text), so it is an argument, never the format string.
 	EIDCardLibraryTraceEx(__FILE__, __LINE__, __FUNCTION__,  // NOSONAR - LOG-01: __FILE__ retained for logging macro
-		static_cast<UCHAR>(severity), szETWMessage);  // NOSONAR - ENUM-01: explicit cast to UCHAR retained for logging
+		static_cast<UCHAR>(severity), L"%s", szETWMessage);  // NOSONAR - ENUM-01: explicit cast to UCHAR retained for logging
 
 	// Log to CSV if enabled
 	if (EID_CSV_IsEnabled())
