@@ -1,0 +1,114 @@
+name: Coverity Scan
+
+# Static analysis by Coverity Scan (https://scan.coverity.com/projects/sp00ky-cb-openaccesseid).
+#
+# Coverity does not read the repository itself: the solution is built under
+# cov-build, which records every compilation, and the resulting cov-int
+# capture is uploaded for analysis. Results appear on the Coverity Scan
+# project page (and by email), not in this run.
+#
+# Secrets: COVERITY_SCAN_TOKEN (project token from the project's settings
+# page) and COVERITY_SCAN_EMAIL (the address registered with Coverity Scan).
+#
+# Weekly plus on demand only: Coverity Scan limits how many builds a project
+# may submit, and the analysis tool is a ~1 GB download (cached below).
+on:
+  schedule:
+    - cron: '23 4 * * 0'   # Sundays
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: coverity-scan
+  cancel-in-progress: false
+
+env:
+  COVERITY_PROJECT: SP00KY-CB/OpenAccessEID
+
+jobs:
+  coverity:
+    name: Coverity Scan build and upload
+    # Same image as windows-ci / CodeQL: VS 2022 with the v143 Spectre libs.
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57  # v3
+
+      # The token travels in request bodies, never on a command line.
+      - name: Look up the current Coverity tool version
+        id: tool
+        env:
+          COVERITY_SCAN_TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+        run: |
+          if (-not $env:COVERITY_SCAN_TOKEN) { throw 'COVERITY_SCAN_TOKEN is not set' }
+          $body = @{ token = $env:COVERITY_SCAN_TOKEN; project = $env:COVERITY_PROJECT; md5 = '1' }
+          $md5 = (Invoke-RestMethod -Method Post -Uri 'https://scan.coverity.com/download/cxx/win64' -Body $body).ToString().Trim()
+          if ($md5 -notmatch '^[0-9a-fA-F]{32}$') { throw "Unexpected tool md5 response: $md5" }
+          "md5=$md5" >> $env:GITHUB_OUTPUT
+
+      - name: Cache the Coverity tool
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: cov-analysis
+          key: coverity-win64-${{ steps.tool.outputs.md5 }}
+
+      - name: Download the Coverity tool
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          COVERITY_SCAN_TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+          EXPECTED_MD5: ${{ steps.tool.outputs.md5 }}
+        run: |
+          $ProgressPreference = 'SilentlyContinue'   # progress rendering makes large downloads crawl
+          $body = @{ token = $env:COVERITY_SCAN_TOKEN; project = $env:COVERITY_PROJECT }
+          Invoke-WebRequest -Method Post -Uri 'https://scan.coverity.com/download/cxx/win64' -Body $body -OutFile cov-analysis.zip
+          $actual = (Get-FileHash cov-analysis.zip -Algorithm MD5).Hash
+          if ($actual -ne $env:EXPECTED_MD5) { throw "Coverity tool md5 mismatch: got $actual, expected $env:EXPECTED_MD5" }
+          Expand-Archive cov-analysis.zip -DestinationPath cov-extract
+          # The archive holds one versioned top-level folder; give it a stable name.
+          $top = Get-ChildItem cov-extract -Directory | Select-Object -First 1
+          Move-Item $top.FullName cov-analysis
+          Remove-Item cov-analysis.zip, cov-extract -Recurse -Force
+
+      - name: Build under cov-build
+        run: |
+          $covBuild = Join-Path $PWD 'cov-analysis\bin\cov-build.exe'
+          if (-not (Test-Path $covBuild)) { throw "cov-build not found at $covBuild" }
+          & $covBuild --dir cov-int msbuild OpenAccessEID.sln /t:Rebuild /p:Configuration=Release /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { throw "cov-build/msbuild failed with exit code $LASTEXITCODE" }
+          # Coverity rejects a submission whose capture missed most compilation
+          # units; surface the capture summary here rather than in an email later.
+          Get-Content cov-int\build-log.txt -Tail 25
+
+      - name: Compress the capture
+        run: tar -czf cov-int.tgz cov-int
+
+      - name: Submit to Coverity Scan
+        env:
+          COVERITY_SCAN_TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+          COVERITY_SCAN_EMAIL: ${{ secrets.COVERITY_SCAN_EMAIL }}
+          VERSION: ${{ github.sha }}
+          DESCRIPTION: ${{ github.workflow }} run ${{ github.run_id }} on ${{ github.ref_name }}
+        run: |
+          if (-not $env:COVERITY_SCAN_EMAIL) { throw 'COVERITY_SCAN_EMAIL is not set' }
+          $form = @{
+            token       = $env:COVERITY_SCAN_TOKEN
+            email       = $env:COVERITY_SCAN_EMAIL
+            file        = Get-Item cov-int.tgz
+            version     = $env:VERSION
+            description = $env:DESCRIPTION
+          }
+          $uri = 'https://scan.coverity.com/builds?project=' + [uri]::EscapeDataString($env:COVERITY_PROJECT)
+          $response = Invoke-WebRequest -Method Post -Uri $uri -Form $form
+          Write-Host "Coverity Scan responded $($response.StatusCode): $($response.Content)"
