@@ -76,7 +76,16 @@ NTSTATUS CheckAuthorization(PWSTR UserName, NTSTATUS *SubStatus, LARGE_INTEGER *
 	auto cleanup = [&]() {
 		if (PrimaryGroupSid) EIDFree(PrimaryGroupSid);
 		if (UserSid) EIDFree(UserSid);
-		if (pGroupSid) EIDFree(pGroupSid);
+		if (pGroupSid)
+		{
+			// The array owns the individual group SIDs too; freeing only the
+			// array leaked every SID already resolved on an error path.
+			for (DWORD j = 0; j < NumberOfGroups + NumberOfLocalGroups; j++)
+			{
+				if (pGroupSid[j]) EIDFree(pGroupSid[j]);
+			}
+			EIDFree(pGroupSid);
+		}
 		if (pGroupInfo) NetApiBufferFree(pGroupInfo);
 		if (pLocalGroupInfo) NetApiBufferFree(pLocalGroupInfo);
 		if (TokenInformation) EIDFree(TokenInformation);
@@ -144,14 +153,27 @@ NTSTATUS CheckAuthorization(PWSTR UserName, NTSTATUS *SubStatus, LARGE_INTEGER *
 		pGroupSid[i] = nullptr;
 	}
 	EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE, L"Group");
+	// NameToSid leaves the output NULL on failure, and GetLengthSid(NULL)
+	// faults inside LSASS - fail the logon instead of building a token from a
+	// partially resolved group list.
 	for (i = 0; i < NumberOfGroups; i++)
 	{
-		NameToSid(pGroupInfo[i].grui1_name, &pGroupSid[i]);
+		if (!NameToSid(pGroupInfo[i].grui1_name, &pGroupSid[i]) || !pGroupSid[i])
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"NameToSid failed for group %s", pGroupInfo[i].grui1_name);
+			cleanup();
+			return EID::make_unexpected(HRESULT_FROM_WIN32(ERROR_INVALID_DATA));
+		}
 		Size += GetLengthSid(pGroupSid[i]);
 	}
 	for (i = 0; i < NumberOfLocalGroups; i++)
 	{
-		NameToSid(pLocalGroupInfo[i].grui0_name, &pGroupSid[NumberOfGroups + i]);
+		if (!NameToSid(pLocalGroupInfo[i].grui0_name, &pGroupSid[NumberOfGroups + i]) || !pGroupSid[NumberOfGroups + i])
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"NameToSid failed for local group %s", pLocalGroupInfo[i].grui0_name);
+			cleanup();
+			return EID::make_unexpected(HRESULT_FROM_WIN32(ERROR_INVALID_DATA));
+		}
 		Size += GetLengthSid(pGroupSid[NumberOfGroups + i]);
 	}
 	// compute the size
@@ -247,8 +269,30 @@ NTSTATUS CheckAuthorization(PWSTR UserName, NTSTATUS *SubStatus, LARGE_INTEGER *
 	return std::make_pair(TokenInformation, Size);
 }
 
+// Map a failure HRESULT from the *Internal functions to a FAILURE NTSTATUS.
+// EID::hr_to_ntstatus turns a FACILITY_WIN32 HRESULT into the bare Win32 code
+// (e.g. ERROR_ACCOUNT_RESTRICTION -> 0x0000052F), which NT_SUCCESS() treats as
+// success, and turns HRESULT_FROM_NT(x) into STATUS_UNSUCCESSFUL, losing x.
+// Callers here compare against STATUS_SUCCESS, but anything that tests
+// NT_SUCCESS() would have accepted a refused logon, so never return a
+// non-error code for a failure.
+static NTSTATUS EIDFailureHResultToNtStatus(HRESULT hr) noexcept
+{
+	if ((hr & FACILITY_NT_BIT) != 0)
+	{
+		const NTSTATUS ntStatus = static_cast<NTSTATUS>(hr & ~FACILITY_NT_BIT);
+		return (static_cast<ULONG>(ntStatus) >= 0xC0000000UL) ? ntStatus : STATUS_LOGON_FAILURE;  // NT_ERROR severity
+	}
+	if (hr == HRESULT_FROM_WIN32(ERROR_NO_SUCH_USER))
+	{
+		return STATUS_NO_SUCH_USER;
+	}
+	const NTSTATUS ntStatus = EID::hr_to_ntstatus(hr);
+	return (static_cast<ULONG>(ntStatus) >= 0xC0000000UL) ? ntStatus : STATUS_LOGON_FAILURE;  // NT_ERROR severity
+}
+
 // Exported wrapper maintaining NTSTATUS return for LSA compatibility
-// Converts HRESULT errors to NTSTATUS via hr_to_ntstatus()
+// Converts HRESULT errors to a failure NTSTATUS (see EIDFailureHResultToNtStatus)
 NTSTATUS UserNameToToken(__in PLSA_UNICODE_STRING AccountName,
 	__out PLSA_TOKEN_INFORMATION_V2 *Token,
 	__out PDWORD TokenLength,
@@ -262,7 +306,7 @@ NTSTATUS UserNameToToken(__in PLSA_UNICODE_STRING AccountName,
 		*TokenLength = size;
 		return STATUS_SUCCESS;
 	}
-	return EID::hr_to_ntstatus(result.error());
+	return EIDFailureHResultToNtStatus(result.error());
 }
 
 // BUG FIX #16: TOCTOU race condition mitigation - use retry loop for SID allocation
@@ -372,7 +416,18 @@ BOOL GetPrimaryGroupSidFromUserSid(PSID UserSID, PSID *PrimaryGroupSID)
 	// cf http://msdn.microsoft.com/en-us/library/aa379649.aspx
 	UCHAR SubAuthorityCount;
 	*PrimaryGroupSID = EIDAlloc(GetLengthSid(UserSID));
-	CopySid(GetLengthSid(UserSID),*PrimaryGroupSID,UserSID);
+	if (!*PrimaryGroupSID)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No memory for PrimaryGroupSID");
+		return FALSE;
+	}
+	if (!CopySid(GetLengthSid(UserSID),*PrimaryGroupSID,UserSID))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CopySid 0x%08x",GetLastError());
+		EIDFree(*PrimaryGroupSID);
+		*PrimaryGroupSID = nullptr;
+		return FALSE;
+	}
 	SubAuthorityCount = *GetSidSubAuthorityCount(*PrimaryGroupSID);
 	*GetSidSubAuthority(*PrimaryGroupSID, SubAuthorityCount-1) = DOMAIN_GROUP_RID_USERS;
 	return TRUE;
@@ -381,7 +436,11 @@ BOOL GetPrimaryGroupSidFromUserSid(PSID UserSID, PSID *PrimaryGroupSID)
 void DebugPrintSid(const WCHAR* Name, PSID Sid)
 {
 	LPTSTR chSID = nullptr;
-	ConvertSidToStringSid(Sid,&chSID);
+	if (!ConvertSidToStringSid(Sid,&chSID) || !chSID)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Name %s Sid <ConvertSidToStringSid 0x%08x>",Name,GetLastError());
+		return;
+	}
 	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Name %s Sid %s",Name,chSID);
 	LocalFree(chSID);
 }
@@ -397,6 +456,7 @@ void DebugPrintSid(const WCHAR* Name, PSID Sid)
 	PUSER_INFO_4 pUserInfo = nullptr;
 	LARGE_INTEGER ExpirationTime;
 	ExpirationTime.QuadPart = 0x7FFFFFFFFFFFFFFF;
+	LONGLONG llAccountExpires = 0x7FFFFFFFFFFFFFFF;  // FILETIME of account expiry; MAX = never
 
 	NET_API_STATUS netStatus = NetUserGetInfo(nullptr, UserName, 4, (LPBYTE*)&pUserInfo);
 	if (netStatus != 0)  // NOSONAR - SCOPE-01: declaration kept in outer scope for clarity
@@ -440,7 +500,39 @@ void DebugPrintSid(const WCHAR* Name, PSID Sid)
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"Account disabled: ACCOUNT_DISABLED");
 		*SubStatus = STATUS_ACCOUNT_DISABLED;
 		// Use HRESULT that maps to STATUS_ACCOUNT_RESTRICTION
-		return EID::make_unexpected(HRESULT_FROM_WIN32(ERROR_ACCOUNT_RESTRICTION));
+		return EID::make_unexpected(HRESULT_FROM_NT(STATUS_ACCOUNT_RESTRICTION));
+	}
+
+	// A locked-out account (too many bad passwords, or an administrator lock)
+	// must not be able to bypass the lockout with a card. SAM reports the
+	// current lockout state in usri4_flags.
+	if (pUserInfo->usri4_flags & UF_LOCKOUT)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"Account locked out: STATUS_ACCOUNT_LOCKED_OUT");
+		*SubStatus = STATUS_ACCOUNT_LOCKED_OUT;
+		return EID::make_unexpected(HRESULT_FROM_NT(STATUS_ACCOUNT_LOCKED_OUT));
+	}
+
+	// Account expiry: usri4_acct_expires is seconds since 1970-01-01 UTC, or
+	// TIMEQ_FOREVER when the account never expires.
+	if (pUserInfo->usri4_acct_expires != TIMEQ_FOREVER)
+	{
+		FILETIME ftNow;
+		GetSystemTimeAsFileTime(&ftNow);
+		ULARGE_INTEGER uliNow;
+		uliNow.LowPart = ftNow.dwLowDateTime;
+		uliNow.HighPart = ftNow.dwHighDateTime;
+		// 116444736000000000 = 1970-01-01 as a FILETIME; 64-bit arithmetic so the
+		// seconds-to-100ns conversion cannot wrap.
+		const ULONGLONG ullAccountExpires = 116444736000000000ULL +
+			static_cast<ULONGLONG>(pUserInfo->usri4_acct_expires) * 10000000ULL;
+		if (uliNow.QuadPart >= ullAccountExpires)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"Account expired: STATUS_ACCOUNT_EXPIRED");
+			*SubStatus = STATUS_ACCOUNT_EXPIRED;
+			return EID::make_unexpected(HRESULT_FROM_NT(STATUS_ACCOUNT_EXPIRED));
+		}
+		llAccountExpires = static_cast<LONGLONG>(ullAccountExpires);
 	}
 
 	if (pUserInfo->usri4_logon_hours)
@@ -456,7 +548,7 @@ void DebugPrintSid(const WCHAR* Name, PSID Sid)
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"STATUS_INVALID_LOGON_HOURS");
 			*SubStatus = STATUS_INVALID_LOGON_HOURS;
-			return EID::make_unexpected(HRESULT_FROM_WIN32(ERROR_ACCOUNT_RESTRICTION));
+			return EID::make_unexpected(HRESULT_FROM_NT(STATUS_ACCOUNT_RESTRICTION));
 		}
 		else
 		{
@@ -489,9 +581,14 @@ void DebugPrintSid(const WCHAR* Name, PSID Sid)
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"STATUS_INVALID_WORKSTATION");
 		*SubStatus = STATUS_INVALID_WORKSTATION;
-		return EID::make_unexpected(HRESULT_FROM_WIN32(ERROR_ACCOUNT_RESTRICTION));
+		return EID::make_unexpected(HRESULT_FROM_NT(STATUS_ACCOUNT_RESTRICTION));
 	}
 
+	// The token must not outlive the account.
+	if (ExpirationTime.QuadPart > llAccountExpires)
+	{
+		ExpirationTime.QuadPart = llAccountExpires;
+	}
 	return ExpirationTime;
 }
 
@@ -505,7 +602,7 @@ NTSTATUS CheckAuthorization(PWSTR UserName, NTSTATUS *SubStatus, LARGE_INTEGER *
 		*ExpirationTime = *result;
 		return STATUS_SUCCESS;
 	}
-	return EID::hr_to_ntstatus(result.error());
+	return EIDFailureHResultToNtStatus(result.error());
 }
 
 
