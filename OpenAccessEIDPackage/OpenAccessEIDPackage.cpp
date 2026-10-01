@@ -1167,8 +1167,6 @@ extern "C"
 				// Dereferenced by UserNameToToken, the audit lines and
 				// CompletePrimaryCredential below.
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No memory for AccountName");
-				EIDFree(szUserName);
-				CertFreeCertificateContext(pCertContext);
 				return STATUS_INSUFFICIENT_RESOURCES;
 			}
 			// trusted ?
@@ -1214,6 +1212,7 @@ extern "C"
 			);
 			
 			EIDFree(szUserName);
+			szUserName = NULL;
 
 
 			// create token
@@ -1267,6 +1266,7 @@ extern "C"
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"RetrieveStoredCredential OK");
 
 			CertFreeCertificateContext(pCertContext);
+			pCertContext = NULL;
 
 			*TokenInformation = MyTokenInformation;
 			*TokenInformationType = LsaTokenInformationV2;
@@ -1345,6 +1345,20 @@ extern "C"
 		{
 			// Runs on all eighteen exits: normal completion, every `return`,
 			// and unwinding towards the __except below.
+			// The certificate context and user name used to be released only
+			// on the success path, so every failed logon (wrong PIN, blocked
+			// card, untrusted certificate, ...) leaked them in LSASS. The
+			// success path frees them early and sets them to NULL.
+			if (pCertContext)
+			{
+				CertFreeCertificateContext(pCertContext);
+				pCertContext = NULL;
+			}
+			if (szUserName)
+			{
+				EIDFree(szUserName);
+				szUserName = NULL;
+			}
 			SecureZeroMemory(pwzPin, sizeof(pwzPin));
 			SecureZeroMemory(pwzPinUncrypted, sizeof(pwzPinUncrypted));
 			if (szPassword)
