@@ -119,7 +119,7 @@ void StopRealtimeSession();
 // Configuration and diagnostics file management
 BOOL LoadCsvConfiguration();
 BOOL EnsureDiagFileOpen();
-void WriteDiagnosticLine(const WCHAR* timestamp, const WCHAR* severity, const WCHAR* message);
+void WriteDiagnosticLine(const WCHAR* timestamp, const WCHAR* severity, DWORD dwProcessId, const WCHAR* message);
 void RotateDiagFile();
 void CloseDiagFile();
 
@@ -320,7 +320,7 @@ void RotateDiagFile()
     g_dwDiagFileSize = 0;
 }
 
-void WriteDiagnosticLine(const WCHAR* timestamp, const WCHAR* severity, const WCHAR* message)
+void WriteDiagnosticLine(const WCHAR* timestamp, const WCHAR* severity, DWORD dwProcessId, const WCHAR* message)
 {
     if (!g_fDiagnosticsEnabled || !EnsureDiagFileOpen())
         return;
@@ -338,10 +338,15 @@ void WriteDiagnosticLine(const WCHAR* timestamp, const WCHAR* severity, const WC
     char szMsg[3072] = {0};  // NOSONAR - LSASS-01: C-style buffer required by Win32 API
     WideCharToMultiByte(CP_UTF8, 0, timestamp, -1, szTs, sizeof(szTs), nullptr, nullptr);
     WideCharToMultiByte(CP_UTF8, 0, severity, -1, szSev, sizeof(szSev), nullptr, nullptr);
-    WideCharToMultiByte(CP_UTF8, 0, message, -1, szMsg, sizeof(szMsg), nullptr, nullptr);
+    if (WideCharToMultiByte(CP_UTF8, 0, message, -1, szMsg, sizeof(szMsg), nullptr, nullptr) == 0)
+        strcpy_s(szMsg, sizeof(szMsg), "(unconvertible message)");
 
+    // The provider GUID is not access-controlled: any local process can write
+    // events to it. Record which process wrote each line so a forged line can
+    // be told apart from one written by the EID components.
     char szLine[4096];  // NOSONAR - LSASS-01: C-style buffer required by Win32 API
-    int len = sprintf_s(szLine, sizeof(szLine), "%s %s %s\r\n", szTs, szSev, szMsg);
+    int len = sprintf_s(szLine, sizeof(szLine), "%s %s [pid %lu] %s\r\n", szTs, szSev,
+        static_cast<unsigned long>(dwProcessId), szMsg);
     if (len > 0)
     {
         DWORD dwWritten = 0;
@@ -416,6 +421,16 @@ VOID WINAPI EventCallback(PEVENT_RECORD pEvent)  // NOSONAR - API-01: signature 
         }
     }
 
+    // The payload is untrusted (anyone can write to the provider GUID): replace
+    // CR/LF and every other control or line-separator character so a payload
+    // cannot start a new, forged line in diagnostics.log.
+    for (size_t i = 0; i < ARRAYSIZE(szMessage) && szMessage[i] != L'\0'; i++)
+    {
+        const WCHAR ch = szMessage[i];
+        if (ch < 0x20 || ch == 0x7F || (ch >= 0x80 && ch <= 0x9F) || ch == 0x2028 || ch == 0x2029)
+            szMessage[i] = L' ';
+    }
+
     // If no user data, create a generic message
     if (szMessage[0] == L'\0')
     {
@@ -435,7 +450,7 @@ VOID WINAPI EventCallback(PEVENT_RECORD pEvent)  // NOSONAR - API-01: signature 
     if (level > static_cast<UCHAR>(g_dwDiagnosticsLevel))
         return; // more verbose than the configured ceiling
 
-    WriteDiagnosticLine(szTimestamp, GetSeverityName(level),
+    WriteDiagnosticLine(szTimestamp, GetSeverityName(level), pEvent->EventHeader.ProcessId,
                         szMessage[0] ? szMessage : L"(no message)");
 }
 
