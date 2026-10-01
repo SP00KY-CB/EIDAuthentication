@@ -36,7 +36,7 @@ INT_PTR CALLBACK WndProc_02_ExportSelect(HWND hwndDlg, UINT uMsg, WPARAM wParam,
             GetDlgItemText(hwndDlg, IDC_02_CONFIRM_PASSWORD, szConfirm, ARRAYSIZE(szConfirm));
 
             // Validate file path
-            if (wcslen(szFile) == 0) { // NOSONAR - szFile is stack-allocated buffer, never NULL
+            if (wcsnlen(szFile, ARRAYSIZE(szFile)) == 0) { // NOSONAR - szFile is stack-allocated buffer, never NULL
                 SecureZeroMemory(szPassword, sizeof(szPassword));
                 SecureZeroMemory(szConfirm, sizeof(szConfirm));
                 MessageBoxW(hwndDlg, L"Please specify an output file.",
@@ -46,7 +46,7 @@ INT_PTR CALLBACK WndProc_02_ExportSelect(HWND hwndDlg, UINT uMsg, WPARAM wParam,
             }
 
             // Validate password
-            if (wcslen(szPassword) < 16) { // NOSONAR - szPassword is stack-allocated buffer, never NULL
+            if (wcsnlen(szPassword, ARRAYSIZE(szPassword)) < 16) { // NOSONAR - szPassword is stack-allocated buffer, never NULL
                 SecureZeroMemory(szPassword, sizeof(szPassword));
                 SecureZeroMemory(szConfirm, sizeof(szConfirm));
                 MessageBoxW(hwndDlg, L"Password must be at least 16 characters.",
@@ -67,7 +67,7 @@ INT_PTR CALLBACK WndProc_02_ExportSelect(HWND hwndDlg, UINT uMsg, WPARAM wParam,
 
             // Store options
             g_wizardData.wsOutputFile = szFile;
-            g_wizardData.wsPassword.assign(szPassword, wcslen(szPassword)); // NOSONAR - szPassword is stack-allocated buffer, never NULL
+            g_wizardData.wsPassword.assign(szPassword, wcsnlen(szPassword, ARRAYSIZE(szPassword))); // NOSONAR - szPassword is stack-allocated buffer, never NULL
             SecureZeroMemory(szPassword, sizeof(szPassword));
             SecureZeroMemory(szConfirm, sizeof(szConfirm));
 

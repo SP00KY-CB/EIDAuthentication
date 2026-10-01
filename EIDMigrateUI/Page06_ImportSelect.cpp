@@ -94,7 +94,7 @@ INT_PTR CALLBACK WndProc_06_ImportSelect(HWND hwndDlg, UINT uMsg, WPARAM wParam,
             GetDlgItemText(hwndDlg, IDC_06_INPUT_FILE, szFile, ARRAYSIZE(szFile));
             GetDlgItemText(hwndDlg, IDC_06_PASSWORD, szPassword, ARRAYSIZE(szPassword));
 
-            if (wcslen(szFile) == 0 || wcslen(szPassword) == 0) { // NOSONAR - both are stack-allocated buffers, never NULL
+            if (wcsnlen(szFile, ARRAYSIZE(szFile)) == 0 || wcsnlen(szPassword, ARRAYSIZE(szPassword)) == 0) { // NOSONAR - both are stack-allocated buffers, never NULL
                 SecureZeroMemory(szPassword, sizeof(szPassword));
                 MessageBoxW(hwndDlg, L"Please select a file and enter a password.",
                     L"Import", MB_ICONEXCLAMATION);
@@ -102,7 +102,7 @@ INT_PTR CALLBACK WndProc_06_ImportSelect(HWND hwndDlg, UINT uMsg, WPARAM wParam,
             }
 
             // Validate password length
-            if (wcslen(szPassword) < 16) { // NOSONAR - szPassword is stack-allocated buffer, never NULL
+            if (wcsnlen(szPassword, ARRAYSIZE(szPassword)) < 16) { // NOSONAR - szPassword is stack-allocated buffer, never NULL
                 SecureZeroMemory(szPassword, sizeof(szPassword));
                 MessageBoxW(hwndDlg, L"Password must be at least 16 characters.",
                     L"Import", MB_ICONEXCLAMATION);
@@ -111,7 +111,7 @@ INT_PTR CALLBACK WndProc_06_ImportSelect(HWND hwndDlg, UINT uMsg, WPARAM wParam,
 
             // Store password (SecureWString: zeroed when released)
             g_wizardData.wsInputFile = szFile;
-            g_wizardData.wsPassword.assign(szPassword, wcslen(szPassword)); // NOSONAR - szPassword is stack-allocated buffer, never NULL
+            g_wizardData.wsPassword.assign(szPassword, wcsnlen(szPassword, ARRAYSIZE(szPassword))); // NOSONAR - szPassword is stack-allocated buffer, never NULL
             SecureZeroMemory(szPassword, sizeof(szPassword));
 
             // Try to read and parse the file

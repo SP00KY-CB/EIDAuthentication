@@ -103,6 +103,14 @@ CEIDProvider::~CEIDProvider()
 		pcpeOld->Release();
 	}
 
+	// The provider holds the creation reference on the message tile (LogonUI takes its own
+	// through QueryInterface). The notifier thread that also uses it was stopped above.
+	if (_pMessageCredential)
+	{
+		_pMessageCredential->Release();
+		_pMessageCredential = nullptr;
+	}
+
 	DeleteCriticalSection(&_csCallback);
     DllRelease();
 	EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Deletion");

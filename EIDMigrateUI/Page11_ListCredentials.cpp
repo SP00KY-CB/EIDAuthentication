@@ -108,7 +108,7 @@ INT_PTR CALLBACK FilePasswordDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPA
             }
 
             // Password length validation
-            if (wcslen(szPassword) < 16) // NOSONAR - szPassword is stack-allocated buffer, never NULL
+            if (wcsnlen(szPassword, ARRAYSIZE(szPassword)) < 16) // NOSONAR - szPassword is stack-allocated buffer, never NULL
             {
                 int nResult = MessageBoxW(hwndDlg,
                     L"The password is less than 16 characters. A strong password is recommended.\n\nDo you want to continue?",
@@ -122,7 +122,7 @@ INT_PTR CALLBACK FilePasswordDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPA
                 }
             }
 
-            pData->wsPassword.assign(szPassword, wcslen(szPassword)); // NOSONAR - szPassword is stack-allocated buffer, never NULL
+            pData->wsPassword.assign(szPassword, wcsnlen(szPassword, ARRAYSIZE(szPassword))); // NOSONAR - szPassword is stack-allocated buffer, never NULL
             pData->fConfirmed = TRUE;
             SecureZeroMemory(szPassword, sizeof(szPassword));
             SecureZeroMemory(szConfirm, sizeof(szConfirm));

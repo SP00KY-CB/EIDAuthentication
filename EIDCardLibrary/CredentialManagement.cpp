@@ -400,21 +400,21 @@ static bool TokenBufferIsPresent(PSecBufferDesc Buffer)
 // SECURITY: what the SSP card actually signs.
 //
 // The signer (GetResponseFromSignatureChallenge) signs the first 20 bytes of
-// the challenge as a raw SHA-1 HP_HASHVAL, so the client used to sign whatever
+// the challenge as a raw 160-bit HP_HASHVAL, so the client used to sign whatever
 // 20 bytes the peer chose: a signing oracle for the card's key (e.g. over the
-// SHA-1 of a document or of another protocol's transcript). Both ends now
+// legacy 160-bit hash of a document or of another protocol's transcript). Both ends now
 // sign/verify a domain-separated value instead:
 //     SHA-256( L"OpenAccessEID-SSP-v1" || cbChallenge || challenge
 //              || cbUserName || UserName )   truncated to 20 bytes,
 // placed at the start of a zeroed buffer of the original challenge size (the
 // verifier insists on CREDENTIALKEYLENGTH bytes and reads the first 20).
-// SHA-256 rather than SHA-1: a SHA-1 chosen-prefix collision would let a peer
-// pick a challenge whose SHA-1 equals that of a message of its choosing; a
+// SHA-256 rather than the legacy 160-bit hash: a chosen-prefix collision in that
+// hash would let a peer pick a challenge that collides with a message of its choosing; a
 // truncated SHA-256 output cannot be steered that way.
 // Both ends are this package; a peer running an older build will fail to
 // authenticate against this one (and vice versa).
 static const WCHAR EID_SSP_SIGNATURE_TAG[] = L"OpenAccessEID-SSP-v1";
-constexpr DWORD EID_SSP_SIGNED_DIGEST_LENGTH = 20;	// CALG_SHA HP_HASHVAL length used by signer/verifier
+constexpr DWORD EID_SSP_SIGNED_DIGEST_LENGTH = 20;	// HP_HASHVAL length (160 bits) used by signer/verifier
 constexpr DWORD EID_SSP_SHA256_LENGTH = 32;
 
 static NTSTATUS DeriveSspSignedChallenge(const BYTE* pbChallenge, DWORD cbChallenge, PCWSTR szUserName,

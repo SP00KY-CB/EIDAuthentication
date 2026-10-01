@@ -278,7 +278,7 @@ static CRYPTO_STATUS PBKDF2HMACSHA256(
 
 // Known-answer test for the standard PBKDF2-HMAC-SHA256 construction.
 // Vectors: P = "password", S = "salt", dkLen = 32 - the widely published
-// PBKDF2-HMAC-SHA256 counterparts of the RFC 6070 SHA-1 set (also checked
+// PBKDF2-HMAC-SHA256 counterparts of the RFC 6070 test set (also checked
 // against Python's hashlib.pbkdf2_hmac). c = 2 and c = 4096 both differ
 // between the standard and the legacy (v1) chaining, so this also catches a
 // regression to the old construction. It runs once per process before the
