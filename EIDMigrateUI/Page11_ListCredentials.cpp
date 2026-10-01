@@ -19,7 +19,7 @@ INT_PTR CALLBACK FilePasswordDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPA
 
 // Structure for file password dialog data
 struct FILE_PASSWORD_DATA {
-    std::wstring wsPassword;
+    SecureWString wsPassword;  // zeroed when released
     BOOL fConfirmed;
     FILE_PASSWORD_DATA() : fConfirmed(FALSE) {}  // NOSONAR - INIT-01: constructor initializer list retained for clarity
 };
@@ -122,7 +122,7 @@ INT_PTR CALLBACK FilePasswordDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPA
                 }
             }
 
-            pData->wsPassword = szPassword;
+            pData->wsPassword.assign(szPassword, wcslen(szPassword)); // NOSONAR - szPassword is stack-allocated buffer, never NULL
             pData->fConfirmed = TRUE;
             SecureZeroMemory(szPassword, sizeof(szPassword));
             SecureZeroMemory(szConfirm, sizeof(szConfirm));
@@ -165,7 +165,7 @@ static SecureWString PromptForFilePassword(HWND hwndParent, BOOL bForEncryption 
 
     if (nResult == IDOK && data.fConfirmed)
     {
-        return SecureWString(data.wsPassword.c_str());
+        return data.wsPassword;
     }
 
     return SecureWString();
@@ -281,7 +281,7 @@ static HRESULT EnumerateFileCredentialsHelper(HWND hList, HWND hwndDlg)
             pWIZARD_DATA->credentials = data.credentials;
             pWIZARD_DATA->groups = data.groups;
             pWIZARD_DATA->wsInputFile = g_wsCurrentFile;
-            pWIZARD_DATA->wsPassword = std::wstring(wsPassword.c_str());
+            pWIZARD_DATA->wsPassword = wsPassword;
         }
 
         if (hList)
