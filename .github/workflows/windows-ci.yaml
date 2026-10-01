@@ -75,9 +75,12 @@ jobs:
       # there would not be actionable in this repo.
       - name: BinSkim binary scan
         shell: pwsh
+        env:
+          BINSKIM_VERSION: '4.4.9.11'
+          BINSKIM_SHA256: 69678989cbc273b5b50fcf98fb0fd978e1e35a3f844acb24254b31f0ce90c447
         run: |
-          $ver = '4.4.9.11'
-          $sha256 = '69678989cbc273b5b50fcf98fb0fd978e1e35a3f844acb24254b31f0ce90c447'
+          $ver = $env:BINSKIM_VERSION
+          $sha256 = $env:BINSKIM_SHA256
           $nupkg = Join-Path $env:RUNNER_TEMP 'binskim.zip'
           Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/microsoft.codeanalysis.binskim/$ver/microsoft.codeanalysis.binskim.$ver.nupkg" -OutFile $nupkg
           $actual = (Get-FileHash -LiteralPath $nupkg -Algorithm SHA256).Hash.ToLowerInvariant()
