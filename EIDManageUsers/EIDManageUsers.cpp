@@ -198,8 +198,10 @@ std::wstring GetCurrentUserSid()
     return wsResult;
 }
 
-// Main dialog procedure
-INT_PTR CALLBACK WndProc_Main(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+// Main dialog procedure body. Called only through WndProc_Main, which keeps
+// C++ exceptions (std::bad_alloc, std::length_error, ...) from unwinding
+// through user32's dispatch frames.
+static INT_PTR WndProc_Main_Impl(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     switch (uMsg)
     {
@@ -287,6 +289,20 @@ INT_PTR CALLBACK WndProc_Main(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
     }
 
     return FALSE;
+}
+
+// Main dialog procedure
+INT_PTR CALLBACK WndProc_Main(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    try
+    {
+        return WndProc_Main_Impl(hwndDlg, uMsg, wParam, lParam);
+    }
+    catch (...)  // NOSONAR - EXCEPT-01: nothing may propagate out of a window procedure
+    {
+        // Report "not handled" rather than letting the exception cross user32.
+        return FALSE;
+    }
 }
 
 // Main entry point

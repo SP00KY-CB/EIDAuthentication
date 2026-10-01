@@ -184,10 +184,12 @@ HWND hWndTemp;  // NOSONAR - RUNTIME-01: Temporary window handle for UI operatio
 
 HICON MiniIcon(HICON SourceIcon)
 {
-	ICONINFO SourceIconInfo;
-	ICONINFO TargetIconInfo;
+	// Zero-initialised so that the single cleanup in __finally is correct
+	// whichever step fails.
+	ICONINFO SourceIconInfo = {};
+	ICONINFO TargetIconInfo = {};
 	HICON TargetIcon = nullptr;
-	BITMAP SourceBitmapInfo;
+	BITMAP SourceBitmapInfo = {};
 	HDC SourceDC = nullptr;
 	HDC TargetDC = nullptr;
 	HDC ScreenDC = nullptr;
@@ -195,17 +197,18 @@ HICON MiniIcon(HICON SourceIcon)
 	HBITMAP OldTargetBitmap = nullptr;
 	__try
 	{
-		/* Get information about the source icon and shortcut overlay */
+		/* Get information about the source icon. GetIconInfo hands us copies
+		   of the mask and colour bitmaps, which we own and must delete. */
 		if (! GetIconInfo(SourceIcon, &SourceIconInfo)
+			|| nullptr == SourceIconInfo.hbmColor
 			|| 0 == GetObjectW(SourceIconInfo.hbmColor, sizeof(BITMAP), &SourceBitmapInfo))
 		{
 		  __leave;
 		}
 
-		/* search for the shortcut icon only once */
-		
-
-		TargetIconInfo = SourceIconInfo;
+		TargetIconInfo.fIcon = SourceIconInfo.fIcon;
+		TargetIconInfo.xHotspot = SourceIconInfo.xHotspot;
+		TargetIconInfo.yHotspot = SourceIconInfo.yHotspot;
 		TargetIconInfo.hbmMask = nullptr;
 		TargetIconInfo.hbmColor = nullptr;
 
@@ -216,18 +219,17 @@ HICON MiniIcon(HICON SourceIcon)
 		if (nullptr == OldSourceBitmap) __leave;
 
 		TargetDC = CreateCompatibleDC(nullptr);
-			if (nullptr == TargetDC) __leave;
+		if (nullptr == TargetDC) __leave;
 		TargetIconInfo.hbmMask = CreateCompatibleBitmap(TargetDC, GetSystemMetrics(SM_CXICON),
 														GetSystemMetrics(SM_CYICON));
 		if (nullptr == TargetIconInfo.hbmMask) __leave;
-	ScreenDC = GetDC(nullptr);
-	if (nullptr == ScreenDC) __leave;
-	TargetIconInfo.hbmColor = CreateCompatibleBitmap(ScreenDC, GetSystemMetrics(SM_CXICON),
+		ScreenDC = GetDC(nullptr);
+		if (nullptr == ScreenDC) __leave;
+		TargetIconInfo.hbmColor = CreateCompatibleBitmap(ScreenDC, GetSystemMetrics(SM_CXICON),
 														 GetSystemMetrics(SM_CYICON));
-	ReleaseDC(nullptr, ScreenDC);
-	if (nullptr == TargetIconInfo.hbmColor) __leave;
-	OldTargetBitmap = (HBITMAP) SelectObject(TargetDC, TargetIconInfo.hbmMask);
-	if (nullptr == OldTargetBitmap) __leave;
+		if (nullptr == TargetIconInfo.hbmColor) __leave;
+		OldTargetBitmap = (HBITMAP) SelectObject(TargetDC, TargetIconInfo.hbmMask);
+		if (nullptr == OldTargetBitmap) __leave;
 
 		/* Create the target mask by ANDing the source and shortcut masks */
 		if (! BitBlt(TargetDC, 0, 0, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
@@ -245,39 +247,42 @@ HICON MiniIcon(HICON SourceIcon)
 		{
 		  __leave;
 		}
-		
 
 		if (! BitBlt(TargetDC, 0, GetSystemMetrics(SM_CYICON) - SourceBitmapInfo.bmHeight, SourceBitmapInfo.bmWidth, SourceBitmapInfo.bmHeight,
 					 SourceDC, 0, 0, SRCCOPY))
 		{
 			__leave;
 		}
-		/* Create the icon using the bitmaps prepared earlier */
-		TargetIcon = CreateIconIndirect(&TargetIconInfo);
-		/* Clean up, we're not goto'ing to 'fail' after this so we can be lazy and not set
-		   handles to NULL */
-		SelectObject(TargetDC, OldTargetBitmap);
-		DeleteObject(TargetDC);
 
-		/* CreateIconIndirect copies the bitmaps, so we can release our bitmaps now */
-		DeleteObject(TargetIconInfo.hbmColor);
-		DeleteObject(TargetIconInfo.hbmMask);
+		/* Deselect the target bitmap before handing it to CreateIconIndirect */
+		SelectObject(TargetDC, OldTargetBitmap);
+		OldTargetBitmap = nullptr;
+
+		/* Create the icon using the bitmaps prepared earlier. CreateIconIndirect
+		   copies the bitmaps, so ours are released in __finally either way. */
+		TargetIcon = CreateIconIndirect(&TargetIconInfo);
 	}
 	__finally
 	{
-		/* Clean up scratch resources we created */
-		if (OldTargetBitmap) 
+		/* Single cleanup path: deselect, then delete bitmaps, then delete DCs */
+		if (ScreenDC)
+			ReleaseDC(nullptr, ScreenDC);
+		if (OldTargetBitmap)
 			SelectObject(TargetDC, OldTargetBitmap);
-		if (TargetIconInfo.hbmColor) 
-			DeleteObject(TargetIconInfo.hbmColor);
-		if (TargetIconInfo.hbmMask) 
-			DeleteObject(TargetIconInfo.hbmMask);
-		if (TargetDC) 
-			DeleteObject(TargetDC);
-		if (OldSourceBitmap) 
+		if (OldSourceBitmap)
 			SelectObject(SourceDC, OldSourceBitmap);
-		if (SourceDC) 
-			DeleteObject(SourceDC);
+		if (TargetIconInfo.hbmColor)
+			DeleteObject(TargetIconInfo.hbmColor);
+		if (TargetIconInfo.hbmMask)
+			DeleteObject(TargetIconInfo.hbmMask);
+		if (SourceIconInfo.hbmColor)
+			DeleteObject(SourceIconInfo.hbmColor);
+		if (SourceIconInfo.hbmMask)
+			DeleteObject(SourceIconInfo.hbmMask);
+		if (TargetDC)
+			DeleteDC(TargetDC);
+		if (SourceDC)
+			DeleteDC(SourceDC);
 	}
 	return TargetIcon;
 }
