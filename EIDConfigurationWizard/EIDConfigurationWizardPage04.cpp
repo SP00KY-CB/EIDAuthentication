@@ -78,6 +78,10 @@ BOOL PopulateListViewCheckData(HWND hWndListViewList, HWND hWndListViewCheck)
 
 	LVGROUP grp;
 	
+	if (!pCredentialList)
+	{
+		return FALSE;
+	}
 	CContainerHolderTest* pContainerHolder = pCredentialList->GetContainerHolderAt(dwCurrentCredential);
 	// dwCurrentCredential is 0xFFFFFFFF when nothing is selected, and the list
 	// can shrink when a card is removed.
@@ -143,6 +147,11 @@ BOOL PopulateListViewListData(HWND hWndListView)
 	// Some code to create the list-view control.
 	
 	ListView_DeleteAllItems(hWndListView);
+	// pCredentialList is reset to nullptr when later pages tear the list down.
+	if (!pCredentialList)
+	{
+		return FALSE;
+	}
 	// Initialize LVITEM members that are common to all items.
 	lvI.mask = LVIF_TEXT | LVIF_IMAGE |  LVIF_STATE | LVIF_COLUMNS; 
 	
@@ -442,12 +451,30 @@ BOOL InitListViewView(HWND hWndListView)
 	return TRUE;
 }
 
+// TRUE when the selected credential exists and passed its checks. The list can be
+// torn down by later pages or shrink when a card is removed, so never dereference
+// GetContainerHolderAt() unchecked.
+static BOOL CurrentCredentialIsUsable()
+{
+	if (!pCredentialList)
+	{
+		return FALSE;
+	}
+	CContainerHolderTest* pHolder = pCredentialList->GetContainerHolderAt(dwCurrentCredential);  // NOSONAR - API-01: pointer type dictated by non-const accessor API
+	return (pHolder && pHolder->GetIconIndex()) ? TRUE : FALSE;
+}
+
 void SelectBestCredential()
 {
 	dwCurrentCredential = 0;
+	if (!pCredentialList)
+	{
+		return;
+	}
 	for (DWORD index = 0; index < pCredentialList->ContainerHolderCount(); index++)
 	{
-		if (pCredentialList->GetContainerHolderAt(index)->GetIconIndex())
+		CContainerHolderTest* pHolder = pCredentialList->GetContainerHolderAt(index);  // NOSONAR - API-01: pointer type dictated by non-const accessor API
+		if (pHolder && pHolder->GetIconIndex())
 		{
 			dwCurrentCredential = index;
 			break;
@@ -504,7 +531,7 @@ static void HandleCredentialSelectionChange(HWND hWnd, LPNMITEMACTIVATE pnmItem)
             dwCurrentCredential = (DWORD)pnmItem->iItem;
             PopulateListViewCheckData(GetDlgItem(hWnd, IDC_04LIST), GetDlgItem(hWnd, IDC_04CHECKS));
 
-            if (pCredentialList->GetContainerHolderAt(dwCurrentCredential)->GetIconIndex())
+            if (CurrentCredentialIsUsable())
             {
                 PropSheet_SetWizButtons(hWnd, PSWIZB_NEXT | PSWIZB_BACK);
             }
@@ -569,7 +596,7 @@ INT_PTR CALLBACK	WndProc_04CHECKS(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 						//has certificate
 						SelectBestCredential();
 						PopulateListViewListData(GetDlgItem(hWnd, IDC_04LIST));	
-						if (pCredentialList->GetContainerHolderAt(dwCurrentCredential)->GetIconIndex())  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
+						if (CurrentCredentialIsUsable())
 						{
 							PropSheet_SetWizButtons(hWnd, PSWIZB_NEXT |	PSWIZB_BACK);
 						}
@@ -634,14 +661,26 @@ INT_PTR CALLBACK	WndProc_04CHECKS(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 				if (pnmh->idFrom == IDC_04LIST && pCredentialList &&
 					((LPNMITEMACTIVATE)lParam)->iItem >= 0 && (DWORD)((LPNMITEMACTIVATE)lParam)->iItem < pCredentialList->ContainerHolderCount())
 				{
-					pCredentialList->GetContainerHolderAt(((LPNMITEMACTIVATE)lParam)->iItem)->GetContainer()->ViewCertificate(hWnd);
+					CContainerHolderTest* pHolder = pCredentialList->GetContainerHolderAt(((LPNMITEMACTIVATE)lParam)->iItem);  // NOSONAR - API-01: pointer type dictated by non-const accessor API
+					if (pHolder && pHolder->GetContainer())
+					{
+						pHolder->GetContainer()->ViewCertificate(hWnd);
+					}
 				}
 				break;
 			case LVN_LINKCLICK:
 				if (pnmh->idFrom == IDC_04CHECKS && pCredentialList)	
 				{
-					BOOL fReturn;
-					fReturn = pCredentialList->GetContainerHolderAt(dwCurrentCredential)->Solve(((NMLVLINK*)lParam)->iSubItem);
+					BOOL fReturn = FALSE;
+					CContainerHolderTest* pHolder = pCredentialList->GetContainerHolderAt(dwCurrentCredential);  // NOSONAR - API-01: pointer type dictated by non-const accessor API
+					if (pHolder)
+					{
+						fReturn = pHolder->Solve(((NMLVLINK*)lParam)->iSubItem);
+					}
+					else
+					{
+						SetLastError(ERROR_NOT_FOUND);
+					}
 					if (!fReturn)  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
 					{
 						MessageBoxWin32Ex(GetLastError(),hWnd);
