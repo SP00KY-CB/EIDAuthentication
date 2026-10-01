@@ -122,15 +122,21 @@ inline BOOL EID_EnsureSecuredDirectory(PCWSTR pwszDir)
         PACL pDacl = nullptr;
         BOOL fDaclPresent = FALSE;
         BOOL fDaclDefaulted = FALSE;
-        if (GetSecurityDescriptorDacl(pSD, &fDaclPresent, &pDacl, &fDaclDefaulted) && fDaclPresent)
+        // SetNamedSecurityInfoW takes a non-const path; hand it a local copy rather
+        // than casting away const. It is used (not the handle-based SetSecurityInfo)
+        // because it also pushes the protected DACL down to existing children.
+        WCHAR szDirCopy[MAX_PATH];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
+        if (GetSecurityDescriptorDacl(pSD, &fDaclPresent, &pDacl, &fDaclDefaulted) && fDaclPresent &&
+            wcsncpy_s(szDirCopy, MAX_PATH, pwszDir, _TRUNCATE) == 0)
         {
             // PROTECTED_DACL_SECURITY_INFORMATION matches the SDDL's "PAI" - it severs
-            // inheritance from ProgramData rather than merging with it.
-            SetNamedSecurityInfoW(const_cast<PWSTR>(pwszDir), SE_FILE_OBJECT,
+            // inheritance from ProgramData rather than merging with it. Only a directory
+            // whose DACL was actually replaced counts as safe: an admin-owned directory
+            // that still carries an inherited Users-writable ACL is not.
+            fSafe = (SetNamedSecurityInfoW(szDirCopy, SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                nullptr, nullptr, pDacl, nullptr);
+                nullptr, nullptr, pDacl, nullptr) == ERROR_SUCCESS) ? TRUE : FALSE;
         }
-        fSafe = TRUE;
     }
     LocalFree(pSD);
     return fSafe;
@@ -166,7 +172,7 @@ inline BOOL EID_IsLogDirSafeForRotation(PCWSTR pwszLogPath)
         return FALSE;
 
     WCHAR szDir[MAX_PATH];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
-    if (wcscpy_s(szDir, pwszLogPath) != 0)
+    if (wcsncpy_s(szDir, MAX_PATH, pwszLogPath, _TRUNCATE) != 0)  // over-long (STRUNCATE) or invalid: refuse
         return FALSE;
     WCHAR* pLastSlash = wcsrchr(szDir, L'\\');
     if (!pLastSlash)
