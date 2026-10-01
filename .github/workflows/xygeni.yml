@@ -11,6 +11,11 @@ name: Xygeni
 # job; the job fails only if the scan itself cannot run.
 #
 # Secret: XYGENI_TOKEN, an API token from the Xygeni dashboard.
+#
+# This is the repository's only Xygeni workflow. The Xygeni onboarding app
+# commits its own daily xygeni-scan.yml when a repository is connected;
+# that duplicate was removed so the two do not both draw on the plan's
+# monthly scan allowance.
 on:
   push:
     branches: [main]
