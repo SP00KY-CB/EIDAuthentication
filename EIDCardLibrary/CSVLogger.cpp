@@ -23,6 +23,7 @@
  */
 
 #include "CSVLogger.h"
+#include "Tracing.h"
 #include "../EIDMigrate/Utils.h"
 #include <string>
 #include <cmath>
@@ -150,6 +151,18 @@ void EIDCSVLogger::RotateLogFile()
         s_hLogFile = INVALID_HANDLE_VALUE;
     }
 
+    // Rotation renames and deletes files as SYSTEM. Re-verify, right before doing so, that
+    // the log directory (and the product directory above it) is a real directory owned by
+    // SYSTEM/Administrators - not a junction a user planted or swapped in - otherwise the
+    // MoveFileExW/DeleteFileW below would act on whatever the junction points at.
+    if (!EID_IsLogDirSafeForRotation(s_szCurrentLogPath))
+    {
+        EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,
+            L"[CONFIG_REJECT] log directory is a reparse point or not owned by SYSTEM/Administrators; CSV file logging disabled");
+        s_config.fEnabled = FALSE;
+        return;
+    }
+
     // Determine rotation number
     DWORD dwRotation = 1;
     WCHAR szRotatedPath[MAX_PATH];  // NOSONAR - LSASS-01: C-style buffer for LSASS safety
@@ -217,7 +230,17 @@ BOOL EIDCSVLogger::EnsureLogFileOpen()
         *pLastSlash = L'\0';
         // M5: create the log directory with a restrictive DACL (Full to SYSTEM/Admins,
         // Read&Execute to Users), re-applying it if the directory already exists.
-        EnsureLogDirSecured(szDir);
+        // A directory that is a reparse point or not owned by SYSTEM/Administrators (e.g.
+        // pre-created by an unprivileged user) is refused, not adopted: disable file
+        // logging rather than write or rotate there.
+        if (!EnsureLogDirSecured(szDir))
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_ERROR,
+                L"[CONFIG_REJECT] log directory is a reparse point or not owned by SYSTEM/Administrators; CSV file logging disabled");
+            s_config.fEnabled = FALSE;
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
     }
 
     // Open file for append (UTF-16 LE encoding)

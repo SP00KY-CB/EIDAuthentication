@@ -15,10 +15,10 @@
 > |---|------|----------|---|-------|
 > | R1 | On a VM with **v1.3.00 installed and a card enrolled**, set `RequireCardBoundCredentials` and one other smart-card policy to non-default values and enable CSV logging. Snapshot. Run the v2.0.00 installer interactively. | The prompt names "EID Authentication (the former name of OpenAccess EID)". The old uninstaller runs and **finishes before** the new install continues; its cleanup checkboxes are unchecked; leave them. After install, a warning about Group Policy appears. | ☐ | |
 > | R2 | Before rebooting, check `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider`. | Both policy values from R1 are still present. | ☐ | |
-> | R3 | Reboot, then **log on with the enrolled card**. | Logon succeeds with no re-enrolment. **Rollback trigger.** | ☐ | |
+> | R3 | Reboot, then **log on with the enrolled card**. | The v1.3.00 uninstaller deletes stored credentials while unregistering, so the install prompt and the final message both say users must re-enrol. Re-enrol, then log on: succeeds. **Rollback trigger.** | ☐ | |
 > | R4 | `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v "Authentication Packages"` and `/v "Security Packages"`. | Both list `OpenAccessEIDPackage` and neither lists `EIDAuthenticationPackage`. **Rollback trigger** if the old name remains. | ☐ | |
 > | R5 | Check `C:\Windows\System32`. | `OpenAccessEIDPackage.dll`, `EIDCredentialProvider.dll` and `EIDPasswordChangeNotification.dll` present; `EIDAuthenticationPackage.dll` absent. | ☐ | |
-> | R6 | Check `C:\ProgramData`. | `OpenAccessEID\` holds the previous `logs\events.csv` and `logging.json`; `EIDAuthentication\` is gone (or, if the installer logged that the move failed, still holds the old logs). New events are written under `OpenAccessEID\logs`. | ☐ | |
+> | R6 | Check `C:\ProgramData`. | `OpenAccessEID\` holds the previous `logs\events.csv` and `logging.json`; `EIDAuthentication\` is gone (or, if the installer logged that the move failed or that the old folder was not owned by SYSTEM/Administrators, still holds the old logs). `icacls C:\ProgramData\OpenAccessEID` shows no inherited ACEs: SYSTEM and Administrators Full, Users read. New events are written under `OpenAccessEID\logs`. | ☐ | |
 > | R7 | Check `HKLM\SOFTWARE\OpenAccessEID\LogManager`. | Holds the CSV logging settings from R1. `HKLM\SOFTWARE\EIDAuthentication` no longer exists. | ☐ | |
 > | R8 | Task Scheduler. | `OpenAccess EID\Apply Trace Config` exists; `EID Authentication\Apply Trace Config` does not. | ☐ | |
 > | R9 | Start Menu, Apps & Features, `C:\Program Files`. | Only "OpenAccess EID" entries; no "EID Authentication" folder, shortcut or uninstall entry. | ☐ | |
@@ -44,7 +44,7 @@
 > | Z3 | Enrol a user with a **57–63 character** password, then log on with the card. | Both succeed. Before this branch, enrolment reported success and every later logon failed with `NTE_BAD_LEN` — the stored ciphertext landed exactly on the block boundary. | ☐ | |
 > | Z4 | Enrol a user with a **64 character** password, then log on. | Both succeed. This length previously stored a truncated (effectively empty) password. | ☐ | |
 > | Z5 | Enrol with an ordinary 8–20 character password and log on. | Succeeds — confirms the block-length change did not disturb the common case. | ☐ | |
-> | Z6 | On a machine with an existing enrolment from **v1.3.00**, upgrade to this build and log on. | Succeeds. The stored-blob format is unchanged; only exact-multiple lengths behave differently. | ☐ | |
+> | Z6 | On a machine with an existing enrolment from **this build**, install the next build over it (upgrade) and log on without re-enrolling; then uninstall with the cleanup boxes unticked, reinstall, log on. | Both logons succeed: neither the upgrade nor the plain uninstall deletes stored credentials. (Upgrading from v1.3.00/v2.0.00 cannot keep them - their uninstaller deletes them; the installer warns.) | ☐ | |
 > | Z7 | Fresh install on a clean VM, then check `HKLM\SOFTWARE\Policies\Microsoft\Windows\SmartCardCredentialProvider\RequireCardBoundCredentials`. | Value is **1**. New installs are card-bound by default now. | ☐ | |
 > | Z8 | Upgrade an existing install that has the policy at 0 (or absent). | Value is **unchanged**. An upgrade must never silently re-lock an existing signature-only enrolment. | ☐ | |
 > | Z9 | With `RequireCardBoundCredentials=1`, attempt to enrol a **signature-only** card. | Enrolment is refused with a clear error. This is the intended trade for Z7. | ☐ | |
@@ -56,6 +56,9 @@
 > | Z15 | Run the configuration wizard's **debug report** feature end to end. | Report is produced. The named pipe is now single-instance with `SECURITY_IDENTIFICATION`, and the path it receives is validated. | ☐ | |
 > | Z16 | Corrupt `C:\ProgramData\OpenAccessEID\logging.json` (invalid JSON), then log on. | Logon succeeds, LSASS does not crash, and an ETW `[CONFIG_REJECT]` event is recorded. | ☐ | |
 > | Z17 | Set `logPath` in `logging.json` to a path outside `C:\ProgramData\OpenAccessEID`. | Rejected; the default log path is retained. | ☐ | |
+> | Z18 | Uninstall with "Remove EID certificate mappings from users" **ticked**, reinstall, try the old card. | Card logon is no longer possible until re-enrolment; the uninstall trace shows `CleanupLsaCredentials` removing the mappings. | ☐ | |
+> | Z19 | On a clean VM, as a **standard user**, create `C:\ProgramData\OpenAccessEID` with a `logging.json` in it; then install as admin. | Installer logs that the folder was moved aside to `OpenAccessEID.untrusted-*` and creates a fresh, locked-down folder. | ☐ | |
+> | Z20 | As admin, `icacls C:\ProgramData\OpenAccessEID\logging.json /setowner <a standard user>`, then log on. | `logging.json` is ignored with an ETW `[CONFIG_REJECT]` event; logging falls back to registry/defaults. | ☐ | |
 >
 > **Rollback trigger:** any ❌ on Z1, Z2, Z5, Z6, Z8 or Z10. Those are the rows
 > where a failure means existing users are locked out or cannot install.

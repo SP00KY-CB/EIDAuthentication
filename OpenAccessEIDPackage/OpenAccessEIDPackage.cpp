@@ -1403,7 +1403,9 @@ extern "C"
 	}
 
 	// CleanupLsaCredentials - Removes EID credential mappings from LSA Private Data
-	// Called by uninstaller to clean up stored credentials for all local users
+	// Called by the uninstaller ONLY when the operator ticks "Remove EID certificate mappings
+	// from users". This is the sole uninstall path that deletes stored credentials:
+	// DllUnRegister deliberately keeps them so uninstall/upgrade preserves enrolments.
 	HRESULT WINAPI CleanupLsaCredentials()  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
 	{
 		HRESULT hr = S_OK;  // NOSONAR - EXPLICIT-TYPE-03: HRESULT visible for security audit
@@ -1417,14 +1419,29 @@ extern "C"
 
 		__try
 		{
+			// Primary removal: ask the loaded package (still resident in LSASS until reboot)
+			// to delete every local user's stored credential, using the same key naming and
+			// RID enumeration that created them. The direct LSA sweep below stays as a
+			// fallback for when the package is not loaded.
+			if (LsaEIDRemoveAllStoredCredential())
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_INFO, L"CleanupLsaCredentials: package removed all stored credentials");
+			}
+			else
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"CleanupLsaCredentials: package removal failed (0x%08x) - using direct LSA sweep", GetLastError());
+			}
+
 			// Initialize LSA object attributes
 			ObjectAttributes.Length = sizeof(LSA_OBJECT_ATTRIBUTES);
 
-			// Open LSA policy with necessary access
+			// Open LSA policy with necessary access. POLICY_GET_PRIVATE_INFORMATION is
+			// required by the LsaRetrievePrivateData existence check below; without it
+			// every retrieve is denied and nothing would be removed.
 			Status = LsaOpenPolicy(
 				NULL,
 				&ObjectAttributes,
-				POLICY_CREATE_SECRET | READ_CONTROL | WRITE_OWNER | WRITE_DAC,
+				POLICY_CREATE_SECRET | POLICY_GET_PRIVATE_INFORMATION | READ_CONTROL | WRITE_OWNER | WRITE_DAC,
 				&LsaPolicyHandle
 			);
 
