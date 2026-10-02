@@ -887,10 +887,10 @@ extern "C"
 				}
 				if (pContext->GetExpiry() != MAXLONGLONG)
 				{
-					LARGE_INTEGER liExpiry;
-					liExpiry.QuadPart = pContext->GetExpiry();
-					ContextLifespan.tsExpiry.LowPart = liExpiry.LowPart;
-					ContextLifespan.tsExpiry.HighPart = liExpiry.HighPart;
+					// Split explicitly rather than through LARGE_INTEGER's union.
+					const ULONGLONG ullExpiry = static_cast<ULONGLONG>(pContext->GetExpiry());
+					ContextLifespan.tsExpiry.LowPart = static_cast<unsigned long>(ullExpiry & 0xFFFFFFFFULL);
+					ContextLifespan.tsExpiry.HighPart = static_cast<long>(ullExpiry >> 32);
 				}
 				Status = MyLsaDispatchTable->CopyToClientBuffer(NULL, sizeof(ContextLifespan), pBuffer, &ContextLifespan);
 				if (Status != STATUS_SUCCESS)
