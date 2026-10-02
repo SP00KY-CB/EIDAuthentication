@@ -750,7 +750,8 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 		// would otherwise use DPAPI which is machine-bound and non-portable.
 		// if (!usPasswordSize) fEncryptPassword = FALSE;  // REMOVED: Force certificate encryption for migratability
 
-		if (fEncryptPassword)
+		const bool fCrypted = (fEncryptPassword != FALSE);
+		if (fCrypted)
 		{
 			// ========== Certificate-based encryption path ==========
 			// Setup: decode public key, acquire crypto context, import key
@@ -830,26 +831,6 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"EncryptPasswordAndSaveIt");
 				__leave;
 			}
-
-			// Calculate buffer size using helper
-			usSecretSize = CalculateSecretSize(true, usEncryptedPasswordSize, usSymetricKeySize, static_cast<ULONG>(pCertContext->cbCertEncoded));
-			if (!usSecretSize)
-			{
-				dwError = ERROR_ARITHMETIC_OVERFLOW;
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"secret size overflow (cert %u bytes)", pCertContext->cbCertEncoded);
-				__leave;
-			}
-			pbSecret = static_cast<PEID_PRIVATE_DATA>(EIDAlloc(usSecretSize));
-			if (!pbSecret)
-			{
-				dwError = GetLastError();
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"EIDAlloc 0x%08x", dwError);
-				__leave;
-			}
-
-			// Build secret data using helper
-			BuildSecretData(pbSecret, pCertContext, pEncryptedPassword, usEncryptedPasswordSize,
-			                pSymetricKey, usSymetricKeySize, true);
 		}
 		else
 		{
@@ -862,27 +843,27 @@ BOOL CStoredCredentialManager::CreateCredential(__in DWORD dwRid, __in PCCERT_CO
 				dwError = GetLastError();
 				__leave;
 			}
-
-			// Calculate buffer size using helper
-			usSecretSize = CalculateSecretSize(false, usEncryptedPasswordSize, 0, static_cast<ULONG>(pCertContext->cbCertEncoded));
-			if (!usSecretSize)
-			{
-				dwError = ERROR_ARITHMETIC_OVERFLOW;
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"secret size overflow (cert %u bytes)", pCertContext->cbCertEncoded);
-				__leave;
-			}
-			pbSecret = static_cast<PEID_PRIVATE_DATA>(EIDAlloc(usSecretSize));
-			if (!pbSecret)
-			{
-				dwError = GetLastError();
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"EIDAlloc 0x%08x", dwError);
-				__leave;
-			}
-
-			// Build secret data using helper
-			BuildSecretData(pbSecret, pCertContext, pEncryptedPassword, usEncryptedPasswordSize,
-			                nullptr, 0, false);
 		}
+
+		// Size, allocate and fill the secret (shared by both paths)
+		usSecretSize = CalculateSecretSize(fCrypted, usEncryptedPasswordSize, fCrypted ? usSymetricKeySize : 0, static_cast<ULONG>(pCertContext->cbCertEncoded));
+		if (!usSecretSize)
+		{
+			dwError = ERROR_ARITHMETIC_OVERFLOW;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"secret size overflow (cert %u bytes)", pCertContext->cbCertEncoded);
+			__leave;
+		}
+		pbSecret = static_cast<PEID_PRIVATE_DATA>(EIDAlloc(usSecretSize));
+		if (!pbSecret)
+		{
+			dwError = GetLastError();
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"EIDAlloc 0x%08x", dwError);
+			__leave;
+		}
+
+		// Build secret data using helper
+		BuildSecretData(pbSecret, pCertContext, pEncryptedPassword, usEncryptedPasswordSize,
+		                fCrypted ? pSymetricKey : nullptr, fCrypted ? usSymetricKeySize : 0, fCrypted);
 
 		// Save the encrypted credential data
 		if (!StorePrivateData(dwRid, reinterpret_cast<PBYTE>(pbSecret), usSecretSize))  // NOSONAR - BYTE-01: BYTE buffer interops with Win32 API

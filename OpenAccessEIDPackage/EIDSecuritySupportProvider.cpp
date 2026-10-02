@@ -909,6 +909,46 @@ extern "C"
 
 
 
+	// First call (no ContextHandle): create a context on a credential that was
+	// acquired for ulRequiredUse. Later calls: look up the existing context.
+	static NTSTATUS ResolveLsaModeContext(LSA_SEC_HANDLE CredentialHandle, LSA_SEC_HANDLE ContextHandle,
+		ULONG ulRequiredUse, CSecurityContext** ppContext, PLSA_SEC_HANDLE NewContextHandle)
+	{
+		*ppContext = nullptr;
+		if (ContextHandle == NULL)
+		{
+			CCredential* pCredential = CCredential::GetCredentialFromHandle(CredentialHandle);
+			if (pCredential == NULL)
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"pCredential = %p",pCredential);
+				return SEC_E_UNKNOWN_CREDENTIALS;
+			}
+			if ((pCredential->Use & ulRequiredUse) == 0)
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Use = %d",pCredential->Use);
+				return SEC_E_UNKNOWN_CREDENTIALS;
+			}
+			CSecurityContext* pNewContext = CSecurityContext::CreateContext(pCredential);
+			if (pNewContext == NULL)
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CreateContext failed");
+				return SEC_E_INSUFFICIENT_MEMORY;
+			}
+			*NewContextHandle = reinterpret_cast<LSA_SEC_HANDLE>(pNewContext);
+			*ppContext = pNewContext;
+			return STATUS_SUCCESS;
+		}
+		CSecurityContext* pCurrentContext = CSecurityContext::GetContextFromHandle(ContextHandle);
+		if (pCurrentContext == NULL)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"currentContext = %p",pCurrentContext);
+			return SEC_E_INVALID_HANDLE;
+		}
+		*NewContextHandle = ContextHandle;
+		*ppContext = pCurrentContext;
+		return STATUS_SUCCESS;
+	}
+
 	/**  The SpInitLsaModeContext function is the client dispatch function used to establish a 
 	security context between a server and client.
 
@@ -939,39 +979,14 @@ extern "C"
 			CSecurityContext* newContext = NULL;
 			*MappedContext = FALSE;
 			*ContextAttributes = ASC_REQ_CONNECTION | ASC_REQ_REPLAY_DETECT;
-			if (ContextHandle == NULL)
+			Status = ResolveLsaModeContext(CredentialHandle, ContextHandle, SECPKG_CRED_OUTBOUND, &newContext, NewContextHandle);
+			if (Status != STATUS_SUCCESS)
 			{
-				// locate credential
-				CCredential* pCredential = CCredential::GetCredentialFromHandle(CredentialHandle);
-				if (pCredential == NULL)
-				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"pCredential = %p",pCredential);
-					Status = SEC_E_UNKNOWN_CREDENTIALS;
-					__leave;
-				}
-				if ((pCredential->Use & SECPKG_CRED_OUTBOUND) == 0)
-				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Use = %d",pCredential->Use);
-					Status = SEC_E_UNKNOWN_CREDENTIALS;
-					__leave;
-				}
-				// create new context : first message
-				newContext = CSecurityContext::CreateContext(pCredential);
-				*NewContextHandle = reinterpret_cast<LSA_SEC_HANDLE>(newContext);
+				__leave;
 			}
-			else
+			if (ContextHandle != NULL)
 			{
-				// retrieve previous context
-				CSecurityContext* currentContext = CSecurityContext::GetContextFromHandle(ContextHandle);
-				if (currentContext == NULL)
-				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"currentContext = %p",currentContext);
-					Status = SEC_E_INVALID_HANDLE;
-					__leave;
-				}
-				*NewContextHandle = ContextHandle;
-				newContext = currentContext;
-				Status = currentContext->InitializeSecurityContextInput(InputBuffers);
+				Status = newContext->InitializeSecurityContextInput(InputBuffers);
 				if (Status != STATUS_SUCCESS)
 				{
 					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"InitializeSecurityContextInput = 0x%08X",Status);
@@ -1148,38 +1163,10 @@ extern "C"
 			CSecurityContext* newContext = NULL;
 			*MappedContext = FALSE;
 			*ContextAttributes = ASC_REQ_CONNECTION | ASC_REQ_REPLAY_DETECT;
-			if (ContextHandle == NULL)
+			Status = ResolveLsaModeContext(CredentialHandle, ContextHandle, SECPKG_CRED_INBOUND, &newContext, NewContextHandle);
+			if (Status != STATUS_SUCCESS)
 			{
-				// locate credential
-				CCredential* pCredential = CCredential::GetCredentialFromHandle(CredentialHandle);
-				if (pCredential == NULL)
-				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"pCredential = %p",pCredential);
-					Status = SEC_E_UNKNOWN_CREDENTIALS;
-					__leave;
-				}
-				if ((pCredential->Use & SECPKG_CRED_INBOUND) == 0)
-				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Use = %d",pCredential->Use);
-					Status = SEC_E_UNKNOWN_CREDENTIALS;
-					__leave;
-				}
-				// create new context : first message
-				newContext = CSecurityContext::CreateContext(pCredential);
-				*NewContextHandle = reinterpret_cast<LSA_SEC_HANDLE>(newContext);
-			}
-			else
-			{
-				// retrieve previous context
-				CSecurityContext* currentContext = CSecurityContext::GetContextFromHandle(ContextHandle);
-				if (currentContext == NULL)
-				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"currentContext = %p",currentContext);
-					Status = SEC_E_INVALID_HANDLE;
-					__leave;
-				}
-				*NewContextHandle = ContextHandle;
-				newContext = currentContext;
+				__leave;
 			}
 			Status = newContext->AcceptSecurityContextInput(InputBuffers);
 			if (Status != STATUS_SUCCESS)

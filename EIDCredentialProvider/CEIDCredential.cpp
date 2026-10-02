@@ -31,12 +31,10 @@
 
 #include <wincred.h>
 #include <CodeAnalysis/Warnings.h>
+// C4995 (deprecated function names) fires inside both SDK headers.
 #pragma warning(push)
 #pragma warning(disable : 4995)
 #include <Shlwapi.h>
-#pragma warning(pop)
-#pragma warning(push)
-#pragma warning(disable : 4995)
 #include <strsafe.h>
 #pragma warning(pop)
 // Static buffer for PWSTR* assignment (C++23 /Zc:strictStrings compatibility)
