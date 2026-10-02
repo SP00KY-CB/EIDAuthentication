@@ -21,8 +21,9 @@
   ;Default installation folder
   InstallDir "$PROGRAMFILES64\OpenAccess EID"
 
-  ;Get installation folder from registry if available
-  InstallDirRegKey HKLM "Software\OpenAccessEID" "InstallPath"
+  ;The installation folder of a previous installation (InstallPath, written
+  ;to the 64-bit registry view) is read in .onInit, not with InstallDirRegKey:
+  ;that reads the 32-bit view, where the value never is.
 
   ;Request application privileges for Windows Vista
   RequestExecutionLevel admin
@@ -114,6 +115,12 @@
   Var /GLOBAL SavedScRemoveOption
   Var /GLOBAL SavedScRemoveOptionType
   Var /GLOBAL SavedScPolicySvcStart
+  Var /GLOBAL SavedScPolicySvcDelayed
+
+  ; Handle on $INSTDIR, opened by PinInstallDir without FILE_SHARE_DELETE, so
+  ; that neither the folder nor any folder above it can be renamed or replaced
+  ; while the Core section writes into it. 0 when not open.
+  Var /GLOBAL InstallDirHandle
 
 ;--------------------------------
 ;Constants and macros
@@ -216,7 +223,9 @@ Section "Core" SecCore
   ; $INSTDIR anywhere - including a folder a standard user can write to, or one
   ; that is not ours at all. PrepareInstallDir checks the folder BEFORE it
   ; changes any permission, and stops the installation if it is not a new or
-  ; empty folder or a previous OpenAccess EID installation.
+  ; empty folder or a previous OpenAccess EID installation. It also leaves a
+  ; handle open on the folder, so that neither it nor any folder above it can
+  ; be renamed or replaced until the end of this section (UnpinInstallDir).
   Call PrepareInstallDir
   SetOutPath "$INSTDIR"
 
@@ -400,6 +409,10 @@ Section "Core" SecCore
     Call InstallLog
     MessageBox MB_OK|MB_ICONEXCLAMATION "The uninstaller of the previous version deleted every user's stored smart-card credential.$\n$\nUsers must re-enrol their cards before they can log on with them." /SD IDOK
   ${EndIf}
+
+  ; Everything has been written to $INSTDIR, the System32 copies made and the
+  ; trace consumer service registered from it: release the folder.
+  Call UnpinInstallDir
 
 SectionEnd
 
@@ -897,6 +910,7 @@ Function InstallSystemDll
     Push "ERROR: could not write $R8. Installation stopped; nothing has been registered with LSA."
     Call InstallLog
     MessageBox MB_OK|MB_ICONSTOP "Could not write$\n$R8$\n$\nThe installation has been stopped before anything was registered with Windows. Free some disk space or check that no security product blocks writes to System32, then run the installer again." /SD IDOK
+    Call UnpinInstallDir
     Abort
   ${EndIf}
 
@@ -1301,6 +1315,18 @@ Function SecureEIDDataDir
     Call CreateProtectedDir
     Pop $R0
     ${If} $R0 == 1
+      ; CreateProtectedDir could only ask for owner Administrators when the
+      ; token allowed it (otherwise the owner is the installing account), so
+      ; set the owner here, as PrepareInstallDir does. Nobody but SYSTEM and
+      ; Administrators can change the new folder, so this is safe by path.
+      Push $R9
+      Call LockEIDDirectory
+      Pop $R0
+      ${If} $R0 != 1
+        Push "WARNING: created $R9 (SYSTEM and Administrators Full, Users read) but could not make Administrators its owner; OpenAccess EID may refuse to write logs there. Run this installer again."
+        Call InstallLog
+        Return
+      ${EndIf}
       Push "Created $R9 (owner Administrators; SYSTEM and Administrators Full, Users read)."
       Call InstallLog
       ${ExitDo}
@@ -1511,13 +1537,156 @@ Function IsDirEmpty
 FunctionEnd
 
 ; Push <reason> / Call RefuseInstallDir: records and shows why $INSTDIR is not
-; used, then stops the installation.
+; used, then stops the installation (closing the handle PinInstallDir keeps
+; on it, if any).
 Function RefuseInstallDir
   Exch $R9
+  Call UnpinInstallDir
   Push "ERROR: installation folder $INSTDIR: $R9 Installation stopped."
   Call InstallLog
   MessageBox MB_OK|MB_ICONSTOP "The installation folder$\n$INSTDIR$\n$R9$\n$\nOpenAccess EID runs a SYSTEM service from this folder, so it will not install there. Choose another folder." /SD IDOK
   Abort
+FunctionEnd
+
+; Call UnpinInstallDir
+; Closes the handle PinInstallDir opened on $INSTDIR, if it is open. Safe to
+; call at any time, including from .onInit and .onInstFailed.
+Function UnpinInstallDir
+  ${If} $InstallDirHandle != ""
+  ${AndIf} $InstallDirHandle != 0
+    System::Call 'kernel32::CloseHandle(p $InstallDirHandle)'
+  ${EndIf}
+  StrCpy $InstallDirHandle 0
+FunctionEnd
+
+; Call PinInstallDir
+; Opens $INSTDIR (the canonical path PrepareInstallDir checked) and keeps the
+; handle in $InstallDirHandle until UnpinInstallDir. The handle does not share
+; delete access, so while it is open Windows refuses to rename or delete the
+; folder or any folder above it: a custom /D= folder under a parent that a
+; standard user controls cannot be swapped for another folder while the
+; installer works in it. Through the handle (opened with
+; FILE_FLAG_OPEN_REPARSE_POINT) the folder must be a directory and not a
+; reparse point, and its final path must be $INSTDIR itself - not reached
+; through a junction, symbolic link or mapped drive somewhere above it.
+; Stops the installation otherwise.
+Function PinInstallDir
+  Push $R9
+  Push $R8
+  Push $R7
+  Call UnpinInstallDir
+  ; FILE_READ_ATTRIBUTES; FILE_SHARE_READ | FILE_SHARE_WRITE (no
+  ; FILE_SHARE_DELETE); OPEN_EXISTING; FILE_FLAG_BACKUP_SEMANTICS (needed to
+  ; open a directory) | FILE_FLAG_OPEN_REPARSE_POINT.
+  System::Call 'kernel32::CreateFileW(w "$INSTDIR", i 0x80, i 3, p 0, i 3, i 0x02200000, p 0) p .R9 ?e'
+  Pop $R8
+  ${If} $R9 = -1
+  ${OrIf} $R9 == 4294967295
+  ${OrIf} $R9 = 0
+    Push "could not be opened to hold it in place during the installation (error $R8)."
+    Call RefuseInstallDir
+  ${EndIf}
+  StrCpy $InstallDirHandle $R9
+
+  ; BY_HANDLE_FILE_INFORMATION is 52 bytes; dwFileAttributes comes first.
+  StrCpy $R7 0
+  System::Call '*(&i52) p .R8'
+  System::Call 'kernel32::GetFileInformationByHandle(p R9, p R8) i .R7'
+  ${If} $R7 <> 0
+    System::Call '*$R8(i .R7)'
+  ${EndIf}
+  System::Free $R8
+  IntOp $R7 $R7 & 0x410
+  ${If} $R7 <> 0x10
+    Push "is not a folder, or is a junction, symbolic link or other reparse point."
+    Call RefuseInstallDir
+  ${EndIf}
+
+  ; FILE_NAME_NORMALIZED | VOLUME_NAME_DOS: "\\?\C:\...".
+  System::Call 'kernel32::GetFinalPathNameByHandleW(p R9, w .R8, i ${NSIS_MAX_STRLEN}, i 0) i .R7'
+  ${If} $R7 = 0
+  ${OrIf} $R7 >= ${NSIS_MAX_STRLEN}
+    Push "could not be checked (its final path could not be read)."
+    Call RefuseInstallDir
+  ${EndIf}
+  StrCpy $R7 $R8 4
+  ${If} $R7 == "\\?\"
+    StrCpy $R8 $R8 "" 4
+  ${EndIf}
+  ${If} $R8 != $INSTDIR
+    ; A folder created just now may have been named with a short (8.3)
+    ; name, which CanonicalisePath can only resolve once it exists.
+    Push $INSTDIR
+    Call CanonicalisePath
+    Pop $R7
+    ${If} $R7 != $R8
+      Push "is really $R8: a folder above it is a junction, symbolic link or mapped drive, or the folder was replaced while the installer was using it. Use the real path of a new or empty folder."
+      Call RefuseInstallDir
+    ${EndIf}
+    StrCpy $INSTDIR $R8
+    Push $R8
+    Call IsForbiddenInstallDir
+    Pop $R7
+    ${If} $R7 == 1
+      Push "is a drive root, a network path, or a Windows system folder (Windows, Program Files, Common Files, ProgramData, Users)."
+      Call RefuseInstallDir
+    ${EndIf}
+  ${EndIf}
+  Pop $R7
+  Pop $R8
+  Pop $R9
+FunctionEnd
+
+; Push <canonical folder> / Call CreateInstallParents / Pop <"1" | "0">
+; Creates every folder above <folder> that does not exist yet, top down, with
+; CreateProtectedDir (then owner Administrators, LockEIDDirectory), rather than
+; letting them inherit the drive root's permissions - which on the system
+; drive let any authenticated user add, rename and delete in a new folder.
+; "0" when one of them could not be created that way (or was created by
+; something else in the meantime).
+Function CreateInstallParents
+  Exch $R9
+  Push $R8
+  Push $R7
+  Push $R6
+  StrCpy $R7 0
+  ${GetParent} $R9 $R8
+  ${DoWhile} $R8 != ""
+    ${If} ${FileExists} "$R8\*.*"
+      ${ExitDo}
+    ${EndIf}
+    Push $R8
+    IntOp $R7 $R7 + 1
+    ${GetParent} $R8 $R8
+  ${Loop}
+  ; The missing folders are on the stack, the top-most one pushed last.
+  StrCpy $R9 1
+  ${DoWhile} $R7 > 0
+    Pop $R8
+    IntOp $R7 $R7 - 1
+    ${If} $R9 == 1
+      Push $R8
+      Call CreateProtectedDir
+      Pop $R6
+      ${If} $R6 == 1
+        Push $R8
+        Call LockEIDDirectory
+        Pop $R6
+      ${EndIf}
+      ${If} $R6 != 1
+        Push "ERROR: could not create $R8 with permissions restricted to SYSTEM and Administrators (result $R6)."
+        Call InstallLog
+        StrCpy $R9 0
+      ${Else}
+        Push "Created $R8 (owner Administrators; SYSTEM and Administrators Full, Users read)."
+        Call InstallLog
+      ${EndIf}
+    ${EndIf}
+  ${Loop}
+  Pop $R6
+  Pop $R7
+  Pop $R8
+  Exch $R9
 FunctionEnd
 
 ; Call PrepareInstallDir
@@ -1529,18 +1698,25 @@ FunctionEnd
 ;   - a drive root, a network or device path, the Windows folder or anything
 ;     in it, Program Files, Program Files (x86), their Common Files, the
 ;     ProgramData root and the Users folder are refused (IsForbiddenInstallDir);
-;   - a junction, symbolic link or other reparse point, or a file, is refused;
+;   - a junction, symbolic link or other reparse point, or a file, is refused,
+;     and so is a folder reached through one (PinInstallDir);
 ;   - a folder that does not exist is created by CreateProtectedDir, with the
-;     protected DACL from the first instant;
+;     protected DACL from the first instant, and so is any missing folder
+;     above it (CreateInstallParents);
 ;   - an existing EMPTY folder is removed and created again the same way, so
 ;     its old owner and permissions are never adopted;
 ;   - an existing non-empty folder is accepted only when it is a previous
-;     OpenAccess EID installation: the folder the old uninstaller has just run
-;     over (.onInit), or one holding EIDUninstall.exe. Only then are its
-;     permissions reset (LockEIDDirectory), after which everything in it must
-;     pass IsEIDDataTreeTrusted. Any other non-empty folder is refused, and
-;     nothing in it is changed.
-; $INSTDIR is replaced by the canonical path that was checked.
+;     OpenAccess EID installation:
+;       - the folder the old uninstaller has just run over (.onInit): its
+;         permissions are reset (LockEIDDirectory), after which everything in
+;         it must pass IsEIDDataTreeTrusted;
+;       - a folder holding EIDUninstall.exe: anyone could have put that file
+;         there, so everything in it must pass IsEIDDataTreeTrusted FIRST, and
+;         only then are its permissions reset.
+;     Any other non-empty folder is refused, and nothing in it is changed.
+; $INSTDIR is replaced by the canonical path that was checked, and is held
+; open (PinInstallDir) so that it cannot be moved or replaced until the Core
+; section closes it (UnpinInstallDir).
 Function PrepareInstallDir
   Push $INSTDIR
   Call CanonicalisePath
@@ -1567,6 +1743,10 @@ Function PrepareInstallDir
       Call RefuseInstallDir
     ${EndIf}
 
+    ; Hold it in place before anything is decided about it.
+    Call PinInstallDir
+    StrCpy $R9 $INSTDIR
+
     ; 1 = the folder the previous version's uninstaller ran over; 2 = holds
     ; this product's uninstaller; 0 = neither.
     StrCpy $R2 0
@@ -1591,7 +1771,9 @@ Function PrepareInstallDir
         Push "already exists, is not empty and is not an OpenAccess EID installation. Nothing in it was changed. Choose a new or empty folder."
         Call RefuseInstallDir
       ${EndIf}
-      ; Empty: remove it and create it again below, rather than adopt it.
+      ; Empty: remove it and create it again below, rather than adopt it. The
+      ; handle would stop the removal.
+      Call UnpinInstallDir
       ClearErrors
       RMDir $R9
       ${If} ${Errors}
@@ -1599,6 +1781,19 @@ Function PrepareInstallDir
         Call RefuseInstallDir
       ${EndIf}
     ${Else}
+      ; Only holds EIDUninstall.exe: check it before changing anything.
+      ${If} $R2 == 2
+        Push $R9
+        Call IsEIDDataTreeTrusted
+        Pop $R1
+        ${If} $R1 == 0
+          Push "holds EIDUninstall.exe, but it or something in it is not owned by SYSTEM/Administrators, can be modified by other users, or is a junction. Nothing in it was changed. Uninstall that copy, or choose a new or empty folder."
+          Call RefuseInstallDir
+        ${ElseIf} $R1 != 1
+          Push "holds EIDUninstall.exe, but its contents could not be checked (PowerShell did not run, or runs in constrained language mode). Nothing in it was changed. Uninstall that copy first, or choose a new or empty folder."
+          Call RefuseInstallDir
+        ${EndIf}
+      ${EndIf}
       Push "$R9 is a previous OpenAccess EID installation folder; resetting its permissions."
       Call InstallLog
       Push $R9
@@ -1608,19 +1803,17 @@ Function PrepareInstallDir
         Push "could not have its permissions restricted to SYSTEM and Administrators."
         Call RefuseInstallDir
       ${EndIf}
-      Push $R9
-      Call IsEIDDataTreeTrusted
-      Pop $R1
-      ${If} $R1 == 0
-        Push "contains files or folders that are not owned by SYSTEM/Administrators, that other users can modify, or a junction. Remove them, or choose another folder."
-        Call RefuseInstallDir
-      ${ElseIf} $R1 == 2
-        ${If} $R2 == 1
+      ; The folder the old uninstaller ran over: check what it left behind.
+      ${If} $R2 == 1
+        Push $R9
+        Call IsEIDDataTreeTrusted
+        Pop $R1
+        ${If} $R1 == 0
+          Push "contains files or folders that are not owned by SYSTEM/Administrators, that other users can modify, or a junction. Remove them, or choose another folder."
+          Call RefuseInstallDir
+        ${ElseIf} $R1 == 2
           Push "WARNING: could not check the contents of $INSTDIR (PowerShell did not run, or runs in constrained language mode); its permissions have been restricted."
           Call InstallLog
-        ${Else}
-          Push "holds EIDUninstall.exe, but its contents could not be checked (PowerShell did not run, or runs in constrained language mode). Uninstall that copy first, or choose a new or empty folder."
-          Call RefuseInstallDir
         ${EndIf}
       ${EndIf}
       Return
@@ -1628,9 +1821,12 @@ Function PrepareInstallDir
   ${EndIf}
 
   ; A new folder (or an empty one just removed).
-  ${GetParent} $R9 $R1
-  ${IfNot} ${FileExists} "$R1\*.*"
-    CreateDirectory $R1
+  Push $R9
+  Call CreateInstallParents
+  Pop $R1
+  ${If} $R1 != 1
+    Push "could not be created: a folder above it could not be created with permissions restricted to SYSTEM and Administrators."
+    Call RefuseInstallDir
   ${EndIf}
   Push $R9
   Call CreateProtectedDir
@@ -1642,12 +1838,25 @@ Function PrepareInstallDir
     Push "could not be created with permissions restricted to SYSTEM and Administrators."
     Call RefuseInstallDir
   ${EndIf}
+  Call PinInstallDir
+  StrCpy $R9 $INSTDIR
   ; Owner Administrators, also where CreateProtectedDir could not ask for it.
   Push $R9
   Call LockEIDDirectory
   Pop $R1
   ${If} $R1 != 1
     Push "could not have its permissions restricted to SYSTEM and Administrators."
+    Call RefuseInstallDir
+  ${EndIf}
+  ; The handle now holds the folder in place, and only SYSTEM and
+  ; Administrators can change it. It must be the empty folder just created: a
+  ; folder swapped in between its creation and PinInstallDir (by renaming a
+  ; parent a standard user controls) could hold anything.
+  Push $R9
+  Call IsDirEmpty
+  Pop $R1
+  ${If} $R1 != 1
+    Push "was replaced by another folder while the installer was creating it."
     Call RefuseInstallDir
   ${EndIf}
 FunctionEnd
@@ -1687,8 +1896,37 @@ FunctionEnd
 ;--------------------------------
 ;Local smart-card security policy across the old uninstaller
 
-; Saves <value> of HKLM\<key>, with its type: "sz", "dword", or "" when it is
-; absent (or of a type that is not restored).
+; Push <key under HKLM> / Push <value name> / Call GetHKLM64ValueType /
+; Pop <REG_* type number, or "" when the value (or key) is absent>
+; Reads the 64-bit registry view whatever SetRegView says.
+Function GetHKLM64ValueType
+  Exch $R9
+  Exch
+  Exch $R8
+  Push $R7
+  Push $R6
+  Push $R5
+  StrCpy $R5 ""
+  ; HKEY_LOCAL_MACHINE (0x80000002, sign-extended); KEY_QUERY_VALUE |
+  ; KEY_WOW64_64KEY.
+  System::Call 'advapi32::RegOpenKeyExW(p -2147483646, w R8, i 0, i 0x101, *p .R7) i .R6'
+  ${If} $R6 = 0
+    System::Call 'advapi32::RegQueryValueExW(p R7, w R9, p 0, *i .R6, p 0, p 0) i .R8'
+    ${If} $R8 = 0
+      StrCpy $R5 $R6
+    ${EndIf}
+    System::Call 'advapi32::RegCloseKey(p R7)'
+  ${EndIf}
+  StrCpy $R9 $R5
+  Pop $R5
+  Pop $R6
+  Pop $R7
+  Pop $R8
+  Exch $R9
+FunctionEnd
+
+; Saves <value> of HKLM\<key>, with its type: "sz", "expand" (REG_EXPAND_SZ),
+; "dword", or "" when it is absent (or of a type that is not restored).
 !macro OAEID_SaveRegValue KEY NAME VALUE TYPE
   ClearErrors
   ReadRegStr ${VALUE} HKLM "${KEY}" "${NAME}"
@@ -1700,11 +1938,21 @@ FunctionEnd
       StrCpy ${TYPE} "dword"
     ${EndIf}
   ${Else}
-    StrCpy ${TYPE} "sz"
+    ; REG_SZ or REG_EXPAND_SZ (read unexpanded); keep which.
+    Push "${KEY}"
+    Push "${NAME}"
+    Call GetHKLM64ValueType
+    Pop ${TYPE}
+    ${If} ${TYPE} == 2
+      StrCpy ${TYPE} "expand"
+    ${Else}
+      StrCpy ${TYPE} "sz"
+    ${EndIf}
   ${EndIf}
 !macroend
 
-; Writes a value saved by OAEID_SaveRegValue back, only if it is now absent.
+; Writes a value saved by OAEID_SaveRegValue back, with its type, only if it
+; is now absent.
 !macro OAEID_RestoreRegValue KEY NAME VALUE TYPE
   ${If} ${TYPE} != ""
     ClearErrors
@@ -1713,6 +1961,8 @@ FunctionEnd
     ${AndIf} $R9 == ""
       ${If} ${TYPE} == "dword"
         WriteRegDWORD HKLM "${KEY}" "${NAME}" ${VALUE}
+      ${ElseIf} ${TYPE} == "expand"
+        WriteRegExpandStr HKLM "${KEY}" "${NAME}" ${VALUE}
       ${Else}
         WriteRegStr HKLM "${KEY}" "${NAME}" ${VALUE}
       ${EndIf}
@@ -1733,7 +1983,9 @@ FunctionEnd
 ;     scremoveoption "Interactive logon: Smart card removal behavior"
 ; and set the Smart Card Removal Policy service (ScPolicySvc), which enforces
 ; scremoveoption, back to manual start and stop it. Without this an upgrade
-; would silently turn smart-card-only logon and the removal behaviour off.
+; would silently turn smart-card-only logon and the removal behaviour off, or
+; turn on a service an administrator had disabled. The service's start type
+; is saved whatever it is (Start and DelayedAutostart).
 Function SaveLocalSmartCardPolicy
   !insertmacro OAEID_SaveRegValue "Software\Microsoft\Windows\CurrentVersion\Policies\System" "scforceoption" $SavedScForceOption $SavedScForceOptionType
   !insertmacro OAEID_SaveRegValue "Software\Microsoft\Windows NT\CurrentVersion\Winlogon" "scremoveoption" $SavedScRemoveOption $SavedScRemoveOptionType
@@ -1742,28 +1994,85 @@ Function SaveLocalSmartCardPolicy
   ${If} ${Errors}
     StrCpy $SavedScPolicySvcStart ""
   ${EndIf}
+  ClearErrors
+  ReadRegDWORD $SavedScPolicySvcDelayed HKLM "SYSTEM\CurrentControlSet\Services\ScPolicySvc" "DelayedAutostart"
+  ${If} ${Errors}
+  ${OrIf} $SavedScPolicySvcDelayed == ""
+    StrCpy $SavedScPolicySvcDelayed 0
+  ${EndIf}
 FunctionEnd
 
 ; Call RestoreLocalSmartCardPolicy (after the old uninstaller has run)
 Function RestoreLocalSmartCardPolicy
   Push $R9
+  Push $R8
+  Push $R7
   !insertmacro OAEID_RestoreRegValue "Software\Microsoft\Windows\CurrentVersion\Policies\System" "scforceoption" $SavedScForceOption $SavedScForceOptionType
   !insertmacro OAEID_RestoreRegValue "Software\Microsoft\Windows NT\CurrentVersion\Winlogon" "scremoveoption" $SavedScRemoveOption $SavedScRemoveOptionType
-  ; Automatic (2) is what an administrator sets so that scremoveoption is
-  ; enforced; the uninstaller resets it to manual and stops the service.
-  ${If} $SavedScPolicySvcStart == 2
+
+  ; ScPolicySvc: put back the start type it had (the uninstaller sets manual
+  ; and stops it). DelayedAutostart only matters for automatic start (2).
+  ${If} $SavedScPolicySvcStart != ""
     ClearErrors
     ReadRegDWORD $R9 HKLM "SYSTEM\CurrentControlSet\Services\ScPolicySvc" "Start"
-    ${If} $R9 != 2
-      nsExec::ExecToLog '"$SYSDIR\sc.exe" config ScPolicySvc start= auto'
-      Pop $R9
-      nsExec::ExecToLog '"$SYSDIR\sc.exe" start ScPolicySvc'
-      Pop $R9
-      Push "Set the Smart Card Removal Policy service (ScPolicySvc) back to automatic start, as it was before the previous version's uninstaller ran."
-      Call InstallLog
+    ClearErrors
+    ReadRegDWORD $R8 HKLM "SYSTEM\CurrentControlSet\Services\ScPolicySvc" "DelayedAutostart"
+    ${If} ${Errors}
+    ${OrIf} $R8 == ""
+      StrCpy $R8 0
+    ${EndIf}
+    StrCpy $R7 ""
+    ${If} $R9 != $SavedScPolicySvcStart
+      StrCpy $R7 "changed"
+    ${ElseIf} $SavedScPolicySvcStart == 2
+    ${AndIf} $R8 != $SavedScPolicySvcDelayed
+      StrCpy $R7 "changed"
+    ${EndIf}
+    ${If} $R7 == "changed"
+      ${If} $SavedScPolicySvcStart == 2
+        ${If} $SavedScPolicySvcDelayed <> 0
+          StrCpy $R7 "delayed-auto"
+        ${Else}
+          StrCpy $R7 "auto"
+        ${EndIf}
+      ${ElseIf} $SavedScPolicySvcStart == 3
+        StrCpy $R7 "demand"
+      ${ElseIf} $SavedScPolicySvcStart == 4
+        StrCpy $R7 "disabled"
+      ${Else}
+        StrCpy $R7 ""
+        Push "WARNING: the Smart Card Removal Policy service (ScPolicySvc) had start type $SavedScPolicySvcStart before the previous version's uninstaller ran, which this installer does not restore; it is now $R9. Check it with sc qc ScPolicySvc."
+        Call InstallLog
+      ${EndIf}
+      ${If} $R7 != ""
+        nsExec::ExecToLog '"$SYSDIR\sc.exe" config ScPolicySvc start= $R7'
+        Pop $R8
+        ${If} $R8 != 0
+          Push "WARNING: could not set the Smart Card Removal Policy service (ScPolicySvc) back to start= $R7, as it was before the previous version's uninstaller ran (sc.exe result $R8)."
+          Call InstallLog
+        ${Else}
+          ${If} $SavedScPolicySvcStart == 2
+            nsExec::ExecToLog '"$SYSDIR\sc.exe" start ScPolicySvc'
+            Pop $R8
+          ${EndIf}
+          Push "Set the Smart Card Removal Policy service (ScPolicySvc) back to start= $R7, as it was before the previous version's uninstaller ran."
+          Call InstallLog
+        ${EndIf}
+      ${EndIf}
     ${EndIf}
   ${EndIf}
+  Pop $R7
+  Pop $R8
   Pop $R9
+FunctionEnd
+
+;--------------------------------
+;Installation failed
+
+; Abort in a section (RefuseInstallDir, InstallSystemDll) already closes the
+; handle on $INSTDIR; this covers any other way the installation can fail.
+Function .onInstFailed
+  Call UnpinInstallDir
 FunctionEnd
 
 ;--------------------------------
@@ -1776,10 +2085,41 @@ Function .onInit
     Abort
   ${EndIf}
 
+  StrCpy $InstallDirHandle 0
+
+  ; The folder of the installation being replaced (InstallPath, in the 64-bit
+  ; registry view), unless /D= names one. NSIS has already taken /D= off
+  ; $CMDLINE and put it in $INSTDIR, so look for it in the process command
+  ; line - and treat any $INSTDIR other than the default as chosen by /D=, in
+  ; case that command line was too long to read in full.
+  StrCpy $R8 0
+  ${If} $INSTDIR != "$PROGRAMFILES64\OpenAccess EID"
+    StrCpy $R8 1
+  ${Else}
+    System::Call 'kernel32::GetCommandLineW() w .R9'
+    StrLen $R7 $R9
+    StrCpy $R6 0
+    ${DoWhile} $R6 < $R7
+      StrCpy $R5 $R9 4 $R6
+      ${If} $R5 S== " /D="
+        StrCpy $R8 1
+        ${ExitDo}
+      ${EndIf}
+      IntOp $R6 $R6 + 1
+    ${Loop}
+  ${EndIf}
+  ${If} $R8 == 0
+    SetRegView 64
+    ReadRegStr $R9 HKLM "Software\OpenAccessEID" "InstallPath"
+    ${If} $R9 != ""
+      StrCpy $INSTDIR $R9
+    ${EndIf}
+  ${EndIf}
+
   ; This installer has no folder page, so $INSTDIR (the default, /D= or the
   ; InstallPath registry value) is final here. Refuse a drive root or a system
   ; folder now, before an installed version is uninstalled; the Core section
-  ; (PrepareInstallDir) checks the rest.
+  ; (PrepareInstallDir) checks the rest, whichever of the three it came from.
   Push $INSTDIR
   Call CanonicalisePath
   Pop $R9
