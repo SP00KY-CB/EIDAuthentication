@@ -141,9 +141,10 @@ HRESULT SetUserPassword(_In_ const std::wstring& wsUsername, _In_ PCWSTR pwszPas
     return HRESULT_FROM_WIN32(status);
 }
 
-HRESULT SetUserEnabled(_In_ const std::wstring& wsUsername, _In_ BOOL fEnabled)
+// Read-modify-write of a local account's USER_INFO flags: sets dwSet and
+// clears dwClear, leaving every other flag as it was.
+static HRESULT UpdateUserFlags(_In_ const std::wstring& wsUsername, _In_ DWORD dwSet, _In_ DWORD dwClear)
 {
-    // First get current flags to preserve them
     USER_INFO_1* pInfo = nullptr;
     NET_API_STATUS status = NetUserGetInfo(nullptr, wsUsername.c_str(), 1,
         reinterpret_cast<LPBYTE*>(&pInfo));  // NOSONAR - CAST-01: Win32/COM interop cast, layout-verified
@@ -151,13 +152,7 @@ HRESULT SetUserEnabled(_In_ const std::wstring& wsUsername, _In_ BOOL fEnabled)
     if (status != NERR_Success)
         return HRESULT_FROM_WIN32(status);
 
-    // Modify only the disabled flag
-    DWORD dwFlags = pInfo->usri1_flags;
-    if (fEnabled)
-        dwFlags &= ~UF_ACCOUNTDISABLE;  // Clear the disable flag
-    else
-        dwFlags |= UF_ACCOUNTDISABLE;   // Set the disable flag
-
+    const DWORD dwFlags = (pInfo->usri1_flags & ~dwClear) | dwSet;
     NetApiBufferFree(pInfo);
 
     USER_INFO_1008 ui1008 = {};
@@ -169,31 +164,17 @@ HRESULT SetUserEnabled(_In_ const std::wstring& wsUsername, _In_ BOOL fEnabled)
     return HRESULT_FROM_WIN32(status);
 }
 
+HRESULT SetUserEnabled(_In_ const std::wstring& wsUsername, _In_ BOOL fEnabled)
+{
+    // Modify only the disabled flag
+    return fEnabled ? UpdateUserFlags(wsUsername, 0, UF_ACCOUNTDISABLE)
+                    : UpdateUserFlags(wsUsername, UF_ACCOUNTDISABLE, 0);
+}
+
 HRESULT SetUserPasswordNeverExpires(_In_ const std::wstring& wsUsername, _In_ BOOL fNeverExpires)
 {
-    // First get current flags
-    USER_INFO_1* pInfo = nullptr;
-    NET_API_STATUS status = NetUserGetInfo(nullptr, wsUsername.c_str(), 1,
-        reinterpret_cast<LPBYTE*>(&pInfo));  // NOSONAR - CAST-01: Win32/COM interop cast, layout-verified
-
-    if (status != NERR_Success)
-        return HRESULT_FROM_WIN32(status);
-
-    DWORD dwFlags = pInfo->usri1_flags;
-    if (fNeverExpires)
-        dwFlags |= UF_DONT_EXPIRE_PASSWD;
-    else
-        dwFlags &= ~UF_DONT_EXPIRE_PASSWD;
-
-    NetApiBufferFree(pInfo);
-
-    USER_INFO_1008 ui1008 = {};
-    ui1008.usri1008_flags = dwFlags;
-
-    status = NetUserSetInfo(nullptr, wsUsername.c_str(),
-        1008, reinterpret_cast<LPBYTE>(&ui1008), nullptr);  // NOSONAR - BYTE-01: BYTE buffer interops with Win32 API
-
-    return HRESULT_FROM_WIN32(status);
+    return fNeverExpires ? UpdateUserFlags(wsUsername, UF_DONT_EXPIRE_PASSWD, 0)
+                         : UpdateUserFlags(wsUsername, 0, UF_DONT_EXPIRE_PASSWD);
 }
 
 HRESULT EnumerateLocalUsers(_Out_ std::vector<LocalUserInfo>& users)

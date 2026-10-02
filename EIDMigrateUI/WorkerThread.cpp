@@ -204,17 +204,12 @@ DWORD WINAPI ValidateFileWorker(LPVOID lpParam) { // NOSONAR - Windows API requi
         return ERROR_INVALID_PARAMETER;
     }
 
-    HWND hwnd = pContext->hwndParent;
-    UINT uProgressMsg = pContext->uProgressMsg;
-    UINT uCompleteMsg = pContext->uCompleteMsg;
-    UINT uErrorMsg = pContext->uErrorMsg;
-
     const std::wstring& wsInputFile = *pContext->pwszInputFile;
     SecureWString swPassword;
     if (pContext->pwszPassword)
         swPassword = *pContext->pwszPassword;
 
-    SendProgress(hwnd, uProgressMsg, 0, 100, L"Validating file format...");
+    SendProgress(pContext->hwndParent, pContext->uProgressMsg, 0, 100, L"Validating file format...");
 
     VALIDATE_OPTIONS options;
     options.wsInputPath = wsInputFile;
@@ -224,14 +219,14 @@ DWORD WINAPI ValidateFileWorker(LPVOID lpParam) { // NOSONAR - Windows API requi
     VALIDATION_RESULT result;
     HRESULT hr = ValidateImportFile(wsInputFile, swPassword, options, result);
     if (FAILED(hr) || !result.IsValid()) {  // NOSONAR - SCOPE-01: declaration kept at function scope for clarity
-        SendError(hwnd, uErrorMsg, hr, GetLastError(), L"File validation failed");
+        SendError(pContext->hwndParent, pContext->uErrorMsg, hr, GetLastError(), L"File validation failed");
         return hr;
     }
 
-    SendProgress(hwnd, uProgressMsg, 100, 100, L"Validation complete");
+    SendProgress(pContext->hwndParent, pContext->uProgressMsg, 100, 100, L"Validation complete");
 
     std::wstring wsMessage = L"File is valid. Contains " + std::to_wstring(result.dwCredentialCount) + L" credentials";  // NOSONAR - STRING-01: manual concatenation retained
-    SendComplete(hwnd, uCompleteMsg, S_OK, result.dwCredentialCount, wsMessage);
+    SendComplete(pContext->hwndParent, pContext->uCompleteMsg, S_OK, result.dwCredentialCount, wsMessage);
 
     return 0;
 }
