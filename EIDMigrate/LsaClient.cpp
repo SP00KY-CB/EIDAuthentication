@@ -37,8 +37,16 @@ HRESULT LsaEIDImportCredential(
 
 // Enumerate all EID credentials from LSA
 // Uses direct LSA access instead of the authentication package IPC
-HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials)  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
+HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials, _Out_opt_ DWORD* pdwUnreadable)  // NOSONAR - COMPLEXITY-01: refactor deferred; logic verified
 {
+    // Accounts skipped because their credential state could not be read
+    // (lookup/allocation failure, unreadable or malformed secret). Listing
+    // and export tolerate these; the import binding check must not.
+    DWORD dwUnreadable = 0;
+    if (pdwUnreadable)
+    {
+        *pdwUnreadable = 0;
+    }
     // BUG FIX #19: C++ exception handling for LSA operations
     // Ensures proper cleanup even if C++ exceptions occur
     HRESULT hr = S_OK;  // NOSONAR (EXPLICIT-TYPE-01) - Explicit type preferred for clarity
@@ -110,6 +118,7 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
         if (dwSidSize == 0)
         {
             EIDM_TRACE_WARN(L"Failed to get SID size for user '%ls'", pUserInfoArray[i].usri0_name);
+            dwUnreadable++;
             continue;
         }
 
@@ -117,6 +126,7 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
         if (!pSid)
         {
             EIDM_TRACE_ERROR(L"Failed to allocate %u bytes for SID", dwSidSize);
+            dwUnreadable++;
             continue;
         }
         SecureZeroMemory(pSid, dwSidSize);
@@ -127,6 +137,7 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
         {
             EIDM_TRACE_ERROR(L"Failed to allocate domain buffer");
             free(pSid);  // NOSONAR - ALLOC-01: malloc paired with existing free/Win32 alloc
+            dwUnreadable++;
             continue;
         }
 
@@ -137,6 +148,7 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
             EIDM_TRACE_WARN(L"LookupAccountNameW failed for '%ls'", pUserInfoArray[i].usri0_name);
             free(pSid);  // NOSONAR - ALLOC-01: malloc paired with existing free/Win32 alloc
             free(pwszDomain);  // NOSONAR - ALLOC-01: malloc paired with existing free/Win32 alloc
+            dwUnreadable++;
             continue;
         }
         free(pwszDomain);  // NOSONAR - ALLOC-01: malloc paired with existing free/Win32 alloc
@@ -146,6 +158,7 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
         {
             EIDM_TRACE_ERROR(L"Invalid SID returned for '%ls'", pUserInfoArray[i].usri0_name);
             free(pSid);  // NOSONAR - ALLOC-01: malloc paired with existing free/Win32 alloc
+            dwUnreadable++;
             continue;
         }
 
@@ -155,6 +168,7 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
         {
             EIDM_TRACE_ERROR(L"SID has no subauthorities for '%ls'", pUserInfoArray[i].usri0_name);
             free(pSid);  // NOSONAR - ALLOC-01: malloc paired with existing free/Win32 alloc
+            dwUnreadable++;
             continue;
         }
 
@@ -282,19 +296,35 @@ HRESULT EnumerateLsaCredentials(_Out_ std::vector<CredentialInfo>& credentials) 
             {
                 EIDM_TRACE_ERROR(L"EID_PRIVATE_DATA layout invalid (%u bytes) for RID %u", pSecretData->Length, dwRid);
                 LsaFreeMemory(pSecretData);
+                dwUnreadable++;
                 continue;
             }
 
             credentials.push_back(std::move(info));
             LsaFreeMemory(pSecretData);
         }
-        else
+        else if (status == STATUS_OBJECT_NAME_NOT_FOUND)
         {
             EIDM_TRACE_VERBOSE(L"No credential for RID %u", dwRid);
+        }
+        else
+        {
+            // Access denied, an empty secret, or any other failure: whether
+            // this account holds a credential is unknown.
+            EIDM_TRACE_WARN(L"Could not read the credential secret for RID %u: 0x%08X", dwRid, status);
+            if (pSecretData)
+            {
+                LsaFreeMemory(pSecretData);
+            }
+            dwUnreadable++;
         }
     }
 
     hr = S_OK;
+    if (pdwUnreadable)
+    {
+        *pdwUnreadable = dwUnreadable;
+    }
     }
     catch (...)  // NOSONAR - EXCEPTION-01: catch-all is intentional guard
     {
@@ -580,11 +610,19 @@ static HRESULT CheckCertificateNotBoundToOtherRid(_In_ const CredentialInfo& inf
     }
 
     std::vector<CredentialInfo> existing;
-    HRESULT hr = EnumerateLsaCredentials(existing);  // NOSONAR (EXPLICIT-TYPE-01) - Explicit type preferred for clarity
+    DWORD dwUnreadable = 0;
+    HRESULT hr = EnumerateLsaCredentials(existing, &dwUnreadable);  // NOSONAR (EXPLICIT-TYPE-01) - Explicit type preferred for clarity
     if (FAILED(hr))
     {
         EIDM_TRACE_ERROR(L"[ERROR] Cannot enumerate existing credentials to check certificate binding for RID %u: 0x%08X - refusing import", info.dwRid, hr);
         return hr;
+    }
+    if (dwUnreadable != 0)
+    {
+        // Fail closed: an account whose credential could not be read might
+        // already hold this certificate.
+        EIDM_TRACE_ERROR(L"[ERROR] %u local account(s) could not be checked for an existing credential - refusing import of RID %u", dwUnreadable, info.dwRid);
+        return HRESULT_FROM_WIN32(ERROR_CAN_NOT_COMPLETE);
     }
 
     for (const CredentialInfo& other : existing)

@@ -153,18 +153,27 @@ void DebugPrintSid(const WCHAR* Name, PSID Sid);
 	}
 	EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE, L"Group");
 	// NameToSid leaves the output NULL on failure, and GetLengthSid(NULL)
-	// faults inside LSASS. A group that cannot be resolved (orphaned,
-	// renamed, transient lookup failure) is SKIPPED rather than failing the
-	// whole logon: one bad group must not lock the account out, and leaving
-	// a group out of the token only ever reduces privilege. Skipped entries
-	// stay NULL in pGroupSid and are compacted out when TOKEN_GROUPS is
-	// built, so the array has no holes; dwResolvedGroups is its real count.
+	// faults inside LSASS. A group whose name no longer maps to a SID
+	// (orphaned or renamed: ERROR_NONE_MAPPED) is SKIPPED rather than
+	// failing the whole logon, so one stale membership cannot lock the
+	// account out. Any OTHER lookup failure (DC unreachable, out of memory)
+	// fails the logon: leaving out a group that does exist could silently
+	// lift a Deny ACE that names it. Skipped entries stay NULL in pGroupSid
+	// and are compacted out when TOKEN_GROUPS is built, so the array has no
+	// holes; dwResolvedGroups is its real count.
 	DWORD dwResolvedGroups = 0;
 	for (i = 0; i < NumberOfGroups; i++)
 	{
 		if (!NameToSid(pGroupInfo[i].grui1_name, &pGroupSid[i]) || !pGroupSid[i])
 		{
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"NameToSid failed for group %s - group left out of the token", pGroupInfo[i].grui1_name);
+			const DWORD dwLookupError = GetLastError();
+			if (dwLookupError != ERROR_NONE_MAPPED)
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"NameToSid failed for group %s (0x%08x) - failing the logon", pGroupInfo[i].grui1_name, dwLookupError);
+				cleanup();
+				return EID::make_unexpected(HRESULT_FROM_WIN32(ERROR_INVALID_DATA));
+			}
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"group %s no longer maps to a SID - left out of the token", pGroupInfo[i].grui1_name);
 			if (pGroupSid[i])
 			{
 				EIDFree(pGroupSid[i]);
@@ -179,7 +188,14 @@ void DebugPrintSid(const WCHAR* Name, PSID Sid);
 	{
 		if (!NameToSid(pLocalGroupInfo[i].grui0_name, &pGroupSid[NumberOfGroups + i]) || !pGroupSid[NumberOfGroups + i])
 		{
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"NameToSid failed for local group %s - group left out of the token", pLocalGroupInfo[i].grui0_name);
+			const DWORD dwLookupError = GetLastError();
+			if (dwLookupError != ERROR_NONE_MAPPED)
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"NameToSid failed for local group %s (0x%08x) - failing the logon", pLocalGroupInfo[i].grui0_name, dwLookupError);
+				cleanup();
+				return EID::make_unexpected(HRESULT_FROM_WIN32(ERROR_INVALID_DATA));
+			}
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING, L"local group %s no longer maps to a SID - left out of the token", pLocalGroupInfo[i].grui0_name);
 			if (pGroupSid[NumberOfGroups + i])
 			{
 				EIDFree(pGroupSid[NumberOfGroups + i]);
@@ -355,7 +371,11 @@ BOOL NameToSid(WCHAR* UserName, PSID *pUserSid)  // NOSONAR - API-01: signature 
 
 	if (!bResult && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
 	{
-		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to LookupAccountNameW 0x%08x",GetLastError());
+		// Callers decide from the last error whether a failure is fatal, so
+		// keep it intact across the trace.
+		const DWORD dwLookupError = GetLastError();
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to LookupAccountNameW 0x%08x",dwLookupError);
+		SetLastError(dwLookupError);
 		return FALSE;
 	}
 
@@ -374,6 +394,7 @@ BOOL NameToSid(WCHAR* UserName, PSID *pUserSid)  // NOSONAR - API-01: signature 
 		if (!pTempSid)
 		{
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to allocate SID buffer");
+			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
 			return FALSE;
 		}
 		SecureZeroMemory(pTempSid, dLengthSid);
@@ -400,6 +421,7 @@ BOOL NameToSid(WCHAR* UserName, PSID *pUserSid)  // NOSONAR - API-01: signature 
 			// Different error - not a TOCTOU issue, don't retry
 			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to LookupAccountNameW 0x%08x",dwError);
 			EIDFree(pTempSid);
+			SetLastError(dwError);
 			return FALSE;
 		}
 	}
@@ -411,6 +433,7 @@ BOOL NameToSid(WCHAR* UserName, PSID *pUserSid)  // NOSONAR - API-01: signature 
 	{
 		EIDFree(pTempSid);
 	}
+	SetLastError(ERROR_INSUFFICIENT_BUFFER);
 	return FALSE;
 }
 

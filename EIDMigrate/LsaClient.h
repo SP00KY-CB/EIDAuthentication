@@ -105,7 +105,8 @@ struct GroupInfo
 
 // Enumerate all EID credentials from LSA
 HRESULT EnumerateLsaCredentials(
-    _Out_ std::vector<CredentialInfo>& credentials);
+    _Out_ std::vector<CredentialInfo>& credentials,
+    _Out_opt_ DWORD* pdwUnreadable = nullptr);
 
 // Export a single credential from LSA by RID
 HRESULT ExportLsaCredential(

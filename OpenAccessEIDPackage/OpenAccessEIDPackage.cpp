@@ -228,7 +228,13 @@ extern "C"
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetTokenInformation(TokenImpersonationLevel) 0x%08x",dwError);
 				__leave;
 			}
-			if (ImpersonationLevel < SecurityImpersonation)
+			// A client that was itself impersonating must hand us a full
+			// impersonation token (checked above via ClientInfo as well). A
+			// direct caller's token is only read here (user SID and group
+			// membership), which works at identification level, so accept that
+			// rather than deny every caller should the LSA channel's QoS only
+			// grant SecurityIdentification.
+			if (ImpersonationLevel < (ClientInfo.Impersonating ? SecurityImpersonation : SecurityIdentification))
 			{
 				dwError = ERROR_BAD_IMPERSONATION_LEVEL;
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Impersonation level %d too low - denying", static_cast<int>(ImpersonationLevel));

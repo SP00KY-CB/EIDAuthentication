@@ -877,6 +877,21 @@ extern "C"
 			case SECPKG_ATTR_LIFESPAN:
 				ContextLifespan.tsStart = Never;
 				ContextLifespan.tsExpiry = Forever;
+				// Report the same clamp SpAcceptLsaModeContext returned, so the
+				// two answers to "when does this context expire" agree.
+				pContext = CSecurityContext::GetContextFromHandle(ContextHandle);
+				if (!pContext)
+				{
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ContextHandle = %p : SEC_E_INVALID_HANDLE",reinterpret_cast<PVOID>(ContextHandle));
+					return SEC_E_INVALID_HANDLE;
+				}
+				if (pContext->GetExpiry() != MAXLONGLONG)
+				{
+					LARGE_INTEGER liExpiry;
+					liExpiry.QuadPart = pContext->GetExpiry();
+					ContextLifespan.tsExpiry.LowPart = liExpiry.LowPart;
+					ContextLifespan.tsExpiry.HighPart = liExpiry.HighPart;
+				}
 				Status = MyLsaDispatchTable->CopyToClientBuffer(NULL, sizeof(ContextLifespan), pBuffer, &ContextLifespan);
 				if (Status != STATUS_SUCCESS)
 				{
@@ -1201,6 +1216,7 @@ extern "C"
 				{
 					ExpirationTime->LowPart = AccountExpiration.LowPart;
 					ExpirationTime->HighPart = AccountExpiration.HighPart;
+					newContext->SetExpiry(AccountExpiration.QuadPart);
 				}
 			}
 			callbackMessage = static_cast<PEID_SSP_CALLBACK_MESSAGE>(EIDAlloc(sizeof(EID_SSP_CALLBACK_MESSAGE)));

@@ -199,6 +199,7 @@ CSecurityContext::CSecurityContext(CCredential* pCredential)
 	szUserName = nullptr;  // NOSONAR - INIT-01: member initialized in body for clarity/ordering
 	_Role = EID_CONTEXT_ROLE::EIDCRUnbound;
 	_fChallengeIsOurs = FALSE;
+	_llExpiry = MAXLONGLONG;
 	// DELIBERATELY no certificate lookup here.
 	//
 	// This used to call FindCertificateFromHash with
